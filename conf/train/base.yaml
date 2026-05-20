@@ -1,0 +1,13 @@
+epochs: 20
+lr: 0.001
+weight_decay: 1.0e-4
+train_batch_size: ${model.train_batch_size}   # 기본값: conf/model/*.yaml · 변경: train.train_batch_size=
+eval_batch_size: 32768
+amp: bf16              # RTX 3090 BF16 지원
+num_workers: 4
+pin_memory: true
+early_stopping_patience: 5    # val/ndcg_cart_purchase 기준
+loss_weights:
+  view: 1.0
+  cart: 25.0           # sweep 범위: 10~50
+  purchase: 50.0

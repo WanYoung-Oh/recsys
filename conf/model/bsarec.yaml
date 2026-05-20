@@ -1,0 +1,10 @@
+name: bsarec
+train_batch_size: 4096
+max_seq_len: 50
+hidden_size: 256
+n_layers: 3
+n_heads: 4
+inner_size: 512
+hidden_dropout: 0.5
+attn_dropout: 0.5
+# alpha 파라미터(시간/주파수 도메인 혼합 비율)는 모델 내 학습 파라미터로 처리

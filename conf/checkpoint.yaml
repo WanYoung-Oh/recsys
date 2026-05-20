@@ -1,0 +1,2 @@
+# submit / ensemble / eval_proxy — ckpt_path=null 일 때 로드할 단계
+load_phase: full   # full | tuning

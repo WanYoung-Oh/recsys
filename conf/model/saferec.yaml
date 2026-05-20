@@ -1,0 +1,10 @@
+name: saferec
+train_batch_size: 4096
+max_seq_len: 50
+hidden_size: 256
+n_layers: 3
+n_heads: 4
+inner_size: 512
+hidden_dropout: 0.5
+attn_dropout: 0.5
+n_freq_buckets: 64    # view 빈도 이산화 버킷 수 (log-scale)

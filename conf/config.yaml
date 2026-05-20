@@ -1,0 +1,24 @@
+defaults:
+  - data: base
+  - model: sasrec
+  - cv: single_holdout
+  - train: base
+  - ensemble: rank
+  - checkpoint: checkpoint
+  - _self_
+
+seed: 42
+output_dir: outputs/${model.name}/${now:%Y%m%d_%H%M%S}
+
+# 체크포인트: outputs/<model>/runNNN_YYMMDD/{tuning|full}/best.pt
+# run_id=null → 튜닝 시 run 자동 증가, full/로드 시 최신 run 사용
+run_id: null
+run_date: null   # null → 오늘 YYMMDD
+ckpt_path: null  # 지정 시 run 구조 무시
+
+wandb:
+  project: recsys-2026
+  tags:
+    - ${model.name}
+  log_freq: 1
+  enabled: true

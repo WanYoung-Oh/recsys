@@ -1,0 +1,324 @@
+# TUNING — 하이퍼파라미터 튜닝 가이드
+
+| 항목 | 내용 |
+|------|------|
+| 목적 | Val NDCG@10 기준으로 **체계적·재현 가능한** 튜닝 |
+| 튜닝 지표 | **`val/ndcg_cart_purchase`** (NDCG@10, cart+purchase GT ~1,072명) |
+| 참고 지표 | `val/ndcg_purchase_only` (보조), `leaderboard_proxy/ndcg` (**설정 변경 금지**) |
+| 실행 | `python src/train.py ...` (Holdout CV, `cv=single_holdout` 기본) |
+| 관련 문서 | [PLAN.md](PLAN.md) · [OPERATION.md](OPERATION.md) · [README.md](../README.md) |
+
+---
+
+## 0. 튜닝 원칙 (3줄)
+
+1. **설정 선택은 Val만** — proxy·리더보드로 하이퍼파라미터를 바꾸지 않는다.
+2. **한 번에 하나(또는 한 그룹)** — 여러 값을 동시에 바꾸면 원인 분석이 어렵다.
+3. **확정 후 Full-train** — 튜닝은 `tuning/best.pt`, 제출은 `cv=none` → `full/best.pt`.
+
+---
+
+## 1. 튜닝 단계 로드맵
+
+| Step | 목표 | 산출물 | 완료 기준 |
+|------|------|--------|-----------|
+| **S0** | 파이프라인 검증 | SASRec 5 epoch 스모크 | Val NDCG 출력·ckpt 저장 |
+| **S1** | Loss 가중치 | cart 10/25/50 비교표 | Val best cart 값 1개 확정 |
+| **S2** | 모델별 기본 학습 | SASRec / TiSASRec / CL4SRec best run | run별 `tuning/best.pt` + wandb run id |
+| **S3** | 구조 미세 튜닝 (선택) | seq_len, dropout, CL4SRec lmd 등 | Val 개선 ≥ 0.001 또는 시간 대비 무의미면 중단 |
+| **S4** | 앙상블 가중치 | `optimize_ensemble.py` 실행 → rank.yaml 갱신 | Val 최고 조합 1개 |
+| **S5** | Proxy sanity (선택) | `eval_proxy.py` 1~2회 | 기록만, **설정 변경 없음** |
+| **S6** | Full-train + 제출 | `full/best.pt`, submission CSV | 행 수 6,382,570 검증 |
+
+---
+
+## 2. 우선순위 매트릭스
+
+| 우선순위 | 파라미터 그룹 | 설정 위치 | Val 영향 | 시간/VRAM | 권장 |
+|----------|---------------|-----------|----------|-----------|------|
+| ★★★ | **loss_weights (cart, purchase)** | `conf/train/base.yaml` | 매우 큼 | 낮음 | **S1 필수** |
+| ★★★ | **앙상블 weights** | `conf/ensemble/rank.yaml` | 매우 큼 | 추론만 | **S4 필수** |
+| ★★☆ | **max_seq_len** | `conf/model/*.yaml` | 중~큼 | **L²** (50≪100) | **50 기본**, 시간 있으면 100 1회 |
+| ★★☆ | **모델 조합** (어떤 모델을 앙상블에 넣을지) | 실험 설계 | 큼 | 높음 | S2 후 결정 |
+| ★★☆ | **CL4SRec lmd, aug / FEARec freq_mask_ratio** | `conf/model/cl4srec.yaml` · `fearec.yaml` | 중~큼 | 중 | 희소성·주파수 대응 |
+| ★★☆ | **TiSASRec time_span** | `conf/model/tisasrec.yaml` | 중 | 중 | CV=4.12, 넓게 유지 |
+| ★☆☆ | lr, patience, epochs | `conf/train/base.yaml` | 중 | 중 | Val 정체 시 조정 |
+| ★☆☆ | hidden_size, n_layers, inner_size | `conf/model/*.yaml` | 중 | 높음 | 기본값(256/3/512) 우선 |
+| ★☆☆ | dropout | `conf/model/*.yaml` | 소~중 | 낮음 | 0.3 vs 0.5 |
+| 제출 직전 | **cart boost_to_top_n** | 후처리 (PLAN 6-B) | 중~큼 | 낮음 | Full-train 후 Val로 0/1/3 |
+
+---
+
+## 3. 공통 학습 하이퍼파라미터
+
+**파일:** `conf/train/base.yaml` · Hydra 오버라이드 `train.*`
+
+| 파라미터 | 현재값 | 탐색 후보 | CLI 예시 | 비고 |
+|----------|--------|-----------|----------|------|
+| `loss_weights.view` | 1.0 | 고정 | — | 기준 스케일 |
+| `loss_weights.cart` | **25.0** | **10, 25, 50** | `train.loss_weights.cart=30` | **1순위 sweep** |
+| `loss_weights.purchase` | 50.0 | 25, 50, 100 | `train.loss_weights.purchase=50` | cart와 비율 유지 |
+| `lr` | 0.001 | 0.0005, 0.001, 0.002 | `train.lr=0.0005` | NaN 시 ↓ |
+| `epochs` | 20 | 20 ~ 50 | `train.epochs=30` | early stop과 병행 |
+| `early_stopping_patience` | 5 | 5, 10, 20 | `train.early_stopping_patience=10` | Val plateau 시 |
+| `weight_decay` | 1e-4 | 고정 | — | |
+| `train_batch_size` | 모델별 (`conf/model/*.yaml`) | 모델별 상한 | 아래 §5 | OOM 시 `train.train_batch_size=` |
+| `amp` | bf16 | 고정 | — | RTX 3090 |
+
+**S1 권장 grid (cart만, SASRec 빠른 비교):**
+
+| Run ID | cart | purchase | CLI |
+|--------|------|----------|-----|
+| T1-01 | 10 | 50 | `python src/train.py model=sasrec train.loss_weights.cart=10 wandb.name=tune_cart10` |
+| T1-02 | 25 | 50 | `python src/train.py model=sasrec train.loss_weights.cart=25 wandb.name=tune_cart25` |
+| T1-03 | 50 | 50 | `python src/train.py model=sasrec train.loss_weights.cart=50 wandb.name=tune_cart50` |
+
+→ Val best인 cart 값을 **S2~S4 전 모델에 동일 적용**.
+
+---
+
+## 4. 모델 구조 하이퍼파라미터
+
+### 4-1. 공통 (SASRec / TiSASRec / CL4SRec)
+
+**파일:** `conf/model/<model>.yaml` · 오버라이드 `model.*`
+
+| 파라미터 | 현재값 | 탐색 후보 | 우선순위 | CLI 예시 |
+|----------|--------|-----------|----------|----------|
+| `max_seq_len` | **50** | **50, 100** | ★★☆ | `model.max_seq_len=50` |
+| `hidden_size` | 256 | 128, 256 | ★☆☆ | `model.hidden_size=256` |
+| `n_layers` | 3 | 2, 3 | ★☆☆ | `model.n_layers=3` |
+| `n_heads` | 4 | 2, 4 | ★☆☆ | `model.n_heads=4` |
+| `inner_size` | 512 | 256, 512 | ★☆☆ | `model.inner_size=512` |
+| `hidden_dropout` | 0.5 | 0.3, 0.5 | ★☆☆ | `model.hidden_dropout=0.5` |
+| `attn_dropout` | 0.5 | 0.3, 0.5 | ★☆☆ | `model.attn_dropout=0.5` |
+| `train_batch_size` | 모델별 (4096/1024/2048) | OOM 시 ↓ | ★☆☆ | `train.train_batch_size=512` (yaml 기본값 오버라이드) |
+
+**max_seq_len 참고 (EDA):** 중앙값 6 · p90 29 · p99 100 · 50 초과 유저 ~4%. **학습 시간 L²** → 기본 **50** 권장.
+
+### 4-2. TiSASRec 전용
+
+| 파라미터 | 현재값 | 탐색 후보 | CLI 예시 |
+|----------|--------|-----------|----------|
+| `time_span` | 512 | 256, 512, 1024 | `model.time_span=512` |
+
+### 4-3. CL4SRec 전용
+
+| 파라미터 | 현재값 | 탐색 후보 | CLI 예시 |
+|----------|--------|-----------|----------|
+| `lmd` | 0.1 | 0.05, 0.1, 0.2 | `model.lmd=0.1` |
+| `tau` | 1.0 | 0.5, 1.0, 2.0 | `model.tau=1.0` |
+| `aug_crop_ratio` | 0.2 | 0.1 ~ 0.3 | `model.aug_crop_ratio=0.2` |
+| `aug_mask_ratio` | 0.2 | 0.1 ~ 0.3 | `model.aug_mask_ratio=0.2` |
+| `aug_reorder_ratio` | 0.2 | 0.1 ~ 0.3 | `model.aug_reorder_ratio=0.2` |
+
+### 4-4. FEARec 전용
+
+| 파라미터 | 현재값 | 탐색 후보 | CLI 예시 |
+|----------|--------|-----------|----------|
+| `lmd` | 0.1 | 0.05, 0.1, 0.2 | `model.lmd=0.1` |
+| `tau` | 1.0 | 0.5, 1.0 | `model.tau=1.0` |
+| `freq_mask_ratio` | 0.3 | 0.1, 0.3, 0.5 | `model.freq_mask_ratio=0.3` |
+
+### 4-5. SAFERec 전용
+
+| 파라미터 | 현재값 | 탐색 후보 | CLI 예시 |
+|----------|--------|-----------|----------|
+| `n_freq_buckets` | 64 | 32, 64, 128 | `model.n_freq_buckets=64` |
+
+### 4-6. 앙상블 가중치 (optimize_ensemble.py 자동 탐색)
+
+**파일:** `conf/ensemble/rank.yaml`  
+`optimize_ensemble.py` 실행 시 Val NDCG@10 기준 랜덤 서치 300회로 자동 갱신됨.
+
+현재 초기값:
+
+| 모델 | 가중치 |
+|------|--------|
+| sasrec | 1.00 |
+| tisasrec | 0.35 |
+| cl4srec | 0.20 |
+| fearec | 0.30 |
+| bsarec | 0.25 |
+| saferec | 0.20 |
+| mbstr | 0.40 |
+| tifu_knn | 0.15 |
+
+```bash
+# 자동 최적화 (300회, seed=42)
+python src/optimize_ensemble.py
+
+# 시도 횟수 늘리기
+python src/optimize_ensemble.py n_trials=500
+```
+
+---
+
+## 5. 모델별 배치·VRAM (RTX 3090, BF16, max_seq_len=50)
+
+| 모델 | 기본 `train_batch_size` | VRAM (대략) | 설정 위치 / OOM 시 CLI |
+|------|-------------------------|-------------|------------------------|
+| SASRec | **4096** | ~6 GB | `conf/model/sasrec.yaml` · `train.train_batch_size=2048` |
+| TiSASRec | **1024** | ~9 GB (time_matrix [B,L,L]) | `conf/model/tisasrec.yaml` · `train.train_batch_size=512` |
+| CL4SRec | **2048** | ~10 GB (대조 뷰 2개) | `conf/model/cl4srec.yaml` · `train.train_batch_size=1024` |
+| FEARec | **2048** | ~10 GB (FFT 증강 뷰) | `conf/model/fearec.yaml` · `train.train_batch_size=1024` |
+| BSARec | **4096** | ~6 GB | `conf/model/bsarec.yaml` · `train.train_batch_size=2048` |
+| SAFERec | **4096** | ~6 GB | `conf/model/saferec.yaml` · `train.train_batch_size=2048` |
+| MB-STR | **4096** | ~6 GB | `conf/model/mbstr.yaml` · `train.train_batch_size=2048` |
+| TIFU-KNN | — (CPU) | < 1 GB | `src/train_tifu.py` 단독 실행 |
+
+OOM 시: batch **절반** → 재실행. batch는 Val 점수에도 영향하므로 **OOM 해결용**으로만 변경.
+
+---
+
+## 6. S2 — 모델별 기본 튜닝 Runbook
+
+S1에서 확정한 `train.loss_weights.cart`를 아래에 반영 (`CART=25` 예시).
+
+| Run | 모델 | 명령 (요약) | 체크포인트 |
+|-----|------|-------------|------------|
+| T2-01 | SASRec | `python src/train.py model=sasrec train.loss_weights.cart=25` | `outputs/sasrec/runNNN_YYMMDD/tuning/best.pt` |
+| T2-02 | TiSASRec | `python src/train.py model=tisasrec train.loss_weights.cart=25` | `outputs/tisasrec/runNNN_YYMMDD/tuning/best.pt` |
+| T2-03 | CL4SRec | `python src/train.py model=cl4srec train.loss_weights.cart=25` | `outputs/cl4srec/runNNN_YYMMDD/tuning/best.pt` |
+| T2-04 | FEARec | `python src/train.py model=fearec train.loss_weights.cart=25` | `outputs/fearec/runNNN_YYMMDD/tuning/best.pt` |
+| T2-05 | BSARec | `python src/train.py model=bsarec train.loss_weights.cart=25` | `outputs/bsarec/runNNN_YYMMDD/tuning/best.pt` |
+| T2-06 | SAFERec | `python src/train.py model=saferec train.loss_weights.cart=25` | `outputs/saferec/runNNN_YYMMDD/tuning/best.pt` |
+| T2-07 | MB-STR | `python src/train.py model=mbstr train.loss_weights.cart=25` | `outputs/mbstr/runNNN_YYMMDD/tuning/best.pt` |
+
+**run 폴더:** 튜닝마다 `run001`, `run002` … **자동 증가**. wandb run name에 `tune_fearec_s2` 등 태그 권장.
+
+---
+
+## 7. S3 — 선택적 구조 튜닝 (시간 있을 때)
+
+한 모델·한 파라미터씩만 변경.
+
+| 실험 | 변경 | 비교 기준 |
+|------|------|-----------|
+| T3-seq50 | `model.max_seq_len=50` (기본) | T2 best |
+| T3-seq100 | `model.max_seq_len=100` | T2 best (시간 4배 가까움) |
+| T3-drop03 | `model.hidden_dropout=0.3` | T2 best |
+| T3-cl4-lmd | `model.lmd=0.05` / `0.2` | T2-03 best |
+
+**중단 규칙:** Val 개선 **< 0.001** 이면 해당 축 튜닝 중단.
+
+---
+
+## 8. S4 — 앙상블 가중치
+
+**파일:** `conf/ensemble/rank.yaml` · `src/optimize_ensemble.py`
+
+가중치는 `optimize_ensemble.py`가 Val NDCG@10 기준 랜덤 서치로 자동 탐색하여 갱신합니다.  
+체크포인트가 없는 모델은 자동 스킵됩니다.
+
+```bash
+# 자동 최적화 후 앙상블 제출
+python src/optimize_ensemble.py
+python src/ensemble_submit.py
+```
+
+수동 오버라이드가 필요한 경우 `conf/ensemble/rank.yaml`을 직접 편집 후 `ensemble_submit.py`를 재실행합니다.
+
+---
+
+## 9. S5 — Proxy (참고만)
+
+```bash
+python src/eval_proxy.py model=tisasrec
+python src/eval_proxy.py model=tisasrec checkpoint.load_phase=tuning
+```
+
+| Val vs Proxy | 해석 | 조치 |
+|--------------|------|------|
+| Val↑ Proxy↑ | 양호 | Full-train 진행 |
+| Val↑ Proxy↓ | 평시 과적합 가능 | TIFU↓, cart boost 검토 (**Val 기준은 유지**) |
+| Val↓ Proxy↑ | Val 과소평가 가능 | Full-train·후처리 비중 ↑ |
+
+---
+
+## 10. S6 — Full-train & 제출
+
+튜닝 확정 후 **동일 run_id 계열**로 전 기간 학습.
+
+```bash
+python src/train.py model=tisasrec cv=none
+python src/submit.py model=tisasrec
+python src/ensemble_submit.py
+```
+
+| 산출물 | 경로 |
+|--------|------|
+| 튜닝 ckpt | `outputs/<model>/runNNN_YYMMDD/tuning/best.pt` |
+| 제출 ckpt | `outputs/<model>/runNNN_YYMMDD/full/best.pt` |
+
+---
+
+## 11. 실험 기록 테이블 (복사해서 사용)
+
+wandb 또는 스프레드시트에 아래 컬럼으로 기록.
+
+| exp_id | step | model | changed_param | value | val/ndcg_cp | best_epoch | run_dir | wandb_run | notes |
+|--------|------|-------|---------------|-------|-------------|------------|---------|-----------|-------|
+| T1-01 | S1 | sasrec | cart | 10 | | | run003_260520 | | |
+| T1-02 | S1 | sasrec | cart | 25 | | | run004_260520 | | **best cart** |
+| T2-02 | S2 | tisasrec | — | defaults | | | run001_260520 | | |
+| E1 | S4 | ensemble | weights | 0.4/0.25/0.35 | | | — | | |
+
+**changed_param:** 실제로 바꾼 것만 적기 (`cart`, `max_seq_len`, `ensemble`, `-`).
+
+---
+
+## 12. 튜닝하지 않는 것
+
+| 항목 | 이유 |
+|------|------|
+| Holdout 기간 (Feb 09~22) | 대회·PLAN 설계 고정 |
+| `gt_mode: cart_purchase` | 튜닝 목적함수 정의 |
+| `leaderboard_proxy` 점수 | 참고만, **설정 변경 ❌** |
+| `val/ndcg_purchase_only` | GT ~37명, 분산 과다 |
+| `amp: bf16` | 이미 활성, 3090 최적 |
+| `initializer std=0.02` | 코드 고정, 관례값 |
+
+---
+
+## 13. CLI 치트시트
+
+```bash
+# S1 — cart sweep
+python src/train.py model=sasrec train.loss_weights.cart=25 wandb.name=tune_s1_cart25
+
+# S2 — 전체 모델 튜닝 (배치·VRAM 주의)
+python src/train.py model=sasrec
+python src/train.py model=tisasrec
+python src/train.py model=cl4srec
+python src/train.py model=fearec
+python src/train.py model=bsarec
+python src/train.py model=saferec
+python src/train.py model=mbstr
+
+# S3 — seq (시간 주의)
+python src/train.py model=tisasrec model.max_seq_len=50
+
+# S4 — 앙상블 가중치 자동 최적화
+python src/optimize_ensemble.py
+
+# S5 — proxy (튜닝 후 1회)
+python src/eval_proxy.py model=tisasrec
+
+# S6 — full-train 및 제출
+python src/train.py model=tisasrec cv=none
+python src/train_tifu.py          # TIFU-KNN 예측 재생성
+python src/ensemble_submit.py     # cart boost 자동 포함
+```
+
+---
+
+## 14. 관련 문서
+
+- [OPERATION.md](OPERATION.md) — Phase별 운영·체크리스트
+- [PLAN.md](PLAN.md) — EDA 근거·모델 우선순위
+- [README.md](../README.md) — 파이프라인 개요
+
+| 문서 이력 | |
+|-----------|--|
+| 2026-05-20 | 초안 — Val 기준 체계적 튜닝 테이블 |

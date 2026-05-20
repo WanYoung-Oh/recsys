@@ -1,0 +1,8 @@
+data_dir: data
+train_file: train.parquet
+spike_purchase_dates:
+  - "2020-02-27"
+  - "2020-02-28"
+  - "2020-02-29"
+exclude_spike_purchase: true
+gt_mode: cart_purchase

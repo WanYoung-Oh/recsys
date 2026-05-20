@@ -1,0 +1,14 @@
+name: cl4srec
+train_batch_size: 2048   # 대조 뷰 2× encode; OOM 시 train.train_batch_size= 로 오버라이드
+max_seq_len: 50
+hidden_size: 256
+n_layers: 3
+n_heads: 4
+inner_size: 512
+hidden_dropout: 0.5
+attn_dropout: 0.5
+lmd: 0.1 # 대조학습 손실 가중치(추천 손실의 10% 수준으로 보조학습(크면 CL 비중 ↑) : 0.05 ~ 0.2)
+tau: 1.0 # 온도 파라미터(유사도 스케일 (작으면 더 sharp, 클수록 부드러움) : 0.5 ~ 2.0)
+aug_crop_ratio: 0.2 # 패딩 처리 비율 (0.1 ~ 0.3)
+aug_mask_ratio: 0.2 # 마스킹(일부 아이템을 랜덤 아이템으로 교체) 처리 비율 (0.1 ~ 0.3)
+aug_reorder_ratio: 0.2 # 재정렬(아이템 순서를 랜덤으로 변경) 처리 비율 (0.1 ~ 0.3)

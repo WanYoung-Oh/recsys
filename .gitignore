@@ -1,0 +1,108 @@
+# ── 환경·비밀 ─────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.template
+
+# ── Python ────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# 가상환경
+.venv/
+venv/
+ENV/
+env/
+
+# 테스트·타입·린트 캐시
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+
+# ── Jupyter ───────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ── ML 실험 산출물 ────────────────────────────────────────────────────
+outputs/
+wandb/
+
+# 체크포인트·가중치 (outputs 외 경로에 둔 경우)
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# 제출 CSV (재생성 가능; 필요 시 ! 규칙으로 예외)
+outputs/submission_*.csv
+submission_*.csv
+
+# TIFU-KNN 등 중간 산출물
+*.pkl
+*.pickle
+
+# ── 대회 데이터 (용량 큼) ─────────────────────────────────────────────
+data/train.parquet
+data/*.parquet
+data/sample_submission.csv
+
+# ── 실행 로그 ─────────────────────────────────────────────────────────
+*.log
+run_*.log
+nohup.out
+
+# ── Hydra ─────────────────────────────────────────────────────────────
+multirun/
+.hydra/
+
+# ── IDE·에디터 ────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Cursor / Claude 로컬 설정
+.cursor/
+.claude/
+
+# ── OS ────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.SpyderProject
+Thumbs.db
+desktop.ini
+
+# ── 기타 ─────────────────────────────────────────────────────────────
+*.bak
+*.tmp
+.cache/
+baseline_code/
+*.sh
+*.log
+

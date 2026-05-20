@@ -1,0 +1,9 @@
+name: sasrec
+train_batch_size: 4096   # attention [B,H,L,L]; OOM 시 train.train_batch_size= 로 오버라이드
+max_seq_len: 50
+hidden_size: 256
+n_layers: 3
+n_heads: 4
+inner_size: 512
+hidden_dropout: 0.5
+attn_dropout: 0.5

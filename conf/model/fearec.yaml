@@ -1,0 +1,12 @@
+name: fearec
+train_batch_size: 2048
+max_seq_len: 50
+hidden_size: 256
+n_layers: 3
+n_heads: 4
+inner_size: 512
+hidden_dropout: 0.5
+attn_dropout: 0.5
+lmd: 0.1              # 대조학습 손실 가중치 (sweep: 0.05~0.2)
+tau: 1.0              # InfoNCE 온도 파라미터
+freq_mask_ratio: 0.3  # FFT 스펙트럼 마스킹 비율 (sweep: 0.1~0.5)

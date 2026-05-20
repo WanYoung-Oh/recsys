@@ -1,0 +1,5 @@
+enabled: true
+val_start: "2020-02-09"   # inclusive
+val_end:   "2020-02-23"   # exclusive (2주 holdout)
+gt_mode: cart_purchase     # 튜닝 기준: cart+purchase (~1,072명)
+run_leaderboard_proxy: false
