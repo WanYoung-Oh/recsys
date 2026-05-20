@@ -187,17 +187,13 @@ def main(cfg: DictConfig) -> float:
     )
     scaler = torch.cuda.amp.GradScaler()
 
-    from util.paths import get_checkpoint_path, get_train_phase, resolve_run_dir
+    from util.paths import get_checkpoint_path, get_train_phase
 
-    run_dir = resolve_run_dir(
-        cfg, orig_cwd,
-        mode="train_tuning" if cfg.cv.enabled else "train_full",
-    )
     phase = get_train_phase(cfg)
     best_ckpt_path = get_checkpoint_path(cfg, orig_cwd, for_training=True)
     best_ckpt_path.parent.mkdir(parents=True, exist_ok=True)
     best_ckpt = str(best_ckpt_path)
-    print(f"  Run: {run_dir.name} / {phase} → {best_ckpt}")
+    print(f"  Run: {best_ckpt_path.parent.parent.name} / {phase} → {best_ckpt}")
 
     # ── 학습 루프 ──────────────────────────────────────────────────
     best_ndcg, best_epoch, patience_counter = 0.0, 0, 0
