@@ -22,6 +22,7 @@ import torch.nn.functional as F
 import wandb
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -45,14 +46,15 @@ def save_checkpoint(model, optimizer, epoch: int, ndcg: float, path: str):
     )
 
 
-def train_epoch(model, loader, optimizer, scaler, device, amp_dtype, model_name):
+def train_epoch(model, loader, optimizer, scaler, device, amp_dtype, model_name, epoch=0):
     model.train()
     total_loss = 0.0
     is_tisasrec = model_name == "tisasrec"
     is_saferec  = model_name == "saferec"
     is_mbstr    = model_name == "mbstr"
 
-    for batch in loader:
+    pbar = tqdm(loader, desc=f"  Ep{epoch:3d}", leave=False, dynamic_ncols=True)
+    for batch in pbar:
         optimizer.zero_grad()
 
         if is_tisasrec:
@@ -79,6 +81,7 @@ def train_epoch(model, loader, optimizer, scaler, device, amp_dtype, model_name)
         scaler.update()
 
         total_loss += loss.item()
+        pbar.set_postfix(loss=f"{total_loss / pbar.n:.4f}")
 
     return total_loss / len(loader)
 
@@ -199,9 +202,10 @@ def main(cfg: DictConfig) -> float:
     patience = cfg.train.early_stopping_patience
 
     print("▶ 학습 시작")
-    for epoch in range(cfg.train.epochs):
+    epoch_bar = tqdm(range(cfg.train.epochs), desc="Epochs", dynamic_ncols=True)
+    for epoch in epoch_bar:
         t0 = time.time()
-        loss = train_epoch(model, loader, optimizer, scaler, device, amp_dtype, cfg.model.name)
+        loss = train_epoch(model, loader, optimizer, scaler, device, amp_dtype, cfg.model.name, epoch=epoch)
         elapsed = time.time() - t0
 
         log_dict = {"train_loss": loss, "epoch": epoch, "epoch_time_sec": elapsed}
@@ -227,9 +231,12 @@ def main(cfg: DictConfig) -> float:
                 "val/ndcg_purchase_only": ndcg_pu,
                 "val/gt_user_count":      len(gt_cp),
             })
-            print(
+            tqdm.write(
                 f"  Epoch {epoch:3d} | loss {loss:.4f} | "
                 f"ndcg_cp {ndcg_cp:.4f} | ndcg_pu {ndcg_pu:.4f} | {elapsed:.1f}s"
+            )
+            epoch_bar.set_postfix(
+                loss=f"{loss:.4f}", ndcg=f"{ndcg_cp:.4f}", best=f"{best_ndcg:.4f}"
             )
 
             if ndcg_cp > best_ndcg:
@@ -239,11 +246,12 @@ def main(cfg: DictConfig) -> float:
             else:
                 patience_counter += 1
                 if patience > 0 and patience_counter >= patience:
-                    print(f"  Early stopping at epoch {epoch} (best {best_epoch}: {best_ndcg:.4f})")
+                    tqdm.write(f"  Early stopping at epoch {epoch} (best {best_epoch}: {best_ndcg:.4f})")
                     break
         else:
             # cv=none: 매 에포크 loss만 출력, 마지막 에포크 후 체크포인트 저장
-            print(f"  Epoch {epoch:3d} | loss {loss:.4f} | {elapsed:.1f}s")
+            tqdm.write(f"  Epoch {epoch:3d} | loss {loss:.4f} | {elapsed:.1f}s")
+            epoch_bar.set_postfix(loss=f"{loss:.4f}")
 
         if cfg.wandb.enabled:
             wandb.log(log_dict)
