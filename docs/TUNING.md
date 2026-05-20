@@ -322,3 +322,4 @@ python src/ensemble_submit.py     # cart boost 자동 포함
 | 문서 이력 | |
 |-----------|--|
 | 2026-05-20 | 초안 — Val 기준 체계적 튜닝 테이블 |
+| 2026-05-21 | 체크포인트 경로 형식 반영 (runNNN_YYMMDD/tuning|full), 전체 구현 완료 기준 정리 |

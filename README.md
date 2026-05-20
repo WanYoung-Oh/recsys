@@ -97,7 +97,7 @@ flowchart TB
   subgraph trainLoop ["3. 학습 · python src/train.py"]
     models["SASRec · TiSASRec · CL4SRec<br/>FEARec · BSARec · SAFERec · MB-STR · TIFU-KNN"]
     wandb["wandb<br/>val/ndcg_cart_purchase"]
-    ckpt["outputs/모델/runNNN/tuning|full/best.pt"]
+    ckpt["outputs/모델/runNNN_YYMMDD/tuning|full/best.pt"]
     seq --> trainHold
     seq --> fullTrain
     trainHold --> models

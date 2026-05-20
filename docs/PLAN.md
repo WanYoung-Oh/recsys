@@ -2,7 +2,7 @@
 
 | 항목      | 내용                                                                                                                                                                                        |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 최종 수정 | 2026-05-20                                                                                                                                                                                  |
+| 최종 수정 | 2026-05-21                                                                                                                                                                                  |
 | 하드웨어  | RTX 3090 24GB VRAM                                                                                                                                                                          |
 | 개요      | 이커머스 로그(세션·시간순) 위에서 **미래 1주 구매 상품**을 **NDCG@10(이진 relevance)** 로 평가하는 경진대회. EDA 실측값·1-Fold Holdout CV·Hydra+wandb 파이프라인을 반영한 실행 가능한 플랜. |
 
@@ -227,7 +227,7 @@ class FocalLoss(nn.Module):
 
 | 모델 | best NDCG@10(cp) | best epoch | early stop epoch | 설정 | wandb run | ckpt |
 |------|-----------------|-----------|-----------------|------|-----------|------|
-| SASRec | **0.1541** | 10 | 14 | seq=50, batch=4096 | `9tzv2dyc` | `Outputs/sasrec/run003_260520/tuning/best.pt` |
+| SASRec | **0.1541** | 10 | 14 | seq=50, batch=4096 | `9tzv2dyc` | `outputs/sasrec/run003_260520/tuning/best.pt` |
 | TiSASRec | **0.1501** | 1 | 6 (patience=5) | seq=50, batch=1024, ~1119s/ep | `pzjvy1b6` | `outputs/tisasrec/run001_260520/tuning/best.pt` |
 | CL4SRec | **0.1469** | 9 | 14 (patience=5) | seq=100, batch=2048, ~1617s/ep | `qdtlewun` | `outputs/cl4srec/run001_260520/tuning/best.pt` |
 | FEARec | — | — | — | seq=50, batch=2048 | — | — |
@@ -302,9 +302,9 @@ python src/ensemble_submit.py
 - [x] **SASRec 구현 완료** — `src/models/sasrec.py`. Pre-LN, causal mask only(key_padding_mask 제거 — NaN 방지), BPR loss + event-type 가중치, BF16 AMP
   - 5-epoch 스모크: best NDCG@10(cp) = **0.1513** at epoch 1
 - [x] **TiSASRec 학습 완료** — max_seq_len=50, epochs=20(patience=5), 약 1119s/epoch
-  - best NDCG@10(cp) = **0.1501** at epoch 1, early stop at epoch 6. wandb `pzjvy1b6` (`outputs/tisasrec/best.pt`)
+  - best NDCG@10(cp) = **0.1501** at epoch 1, early stop at epoch 6. wandb `pzjvy1b6` (`outputs/tisasrec/run001_260520/tuning/best.pt`)
 - [x] **CL4SRec 학습 완료** — max_seq_len=100, epochs=20(patience=5), 약 1617s/epoch
-  - best NDCG@10(cp) = **0.1469** at epoch 9, early stop at epoch 14. wandb `qdtlewun` (`outputs/cl4srec/best.pt`)
+  - best NDCG@10(cp) = **0.1469** at epoch 9, early stop at epoch 14. wandb `qdtlewun` (`outputs/cl4srec/run001_260520/tuning/best.pt`)
 - [x] **FEARec 구현 완료** — `src/models/fearec.py`. FFT rfft/irfft 주파수 증강 + InfoNCE 대조학습 (SIGIR 2023). `conf/model/fearec.yaml`
 - [ ] FEARec·SASRec 등 추가 모델 학습 및 하이퍼파라미터 튜닝
 
@@ -474,13 +474,18 @@ defaults:
   - _self_
 
 seed: 42
-run_id: null                 # null → 튜닝 시 run 자동 증가, full/로드 시 최신 run
-run_date: null               # null → 오늘 YYMMDD
-ckpt_path: null              # 지정 시 run 구조 무시
+output_dir: outputs/${model.name}/${now:%Y%m%d_%H%M%S}  # Hydra 실행별 워킹 디렉터리
+
+# 체크포인트: outputs/<model>/runNNN_YYMMDD/{tuning|full}/best.pt
+# run_id=null → 튜닝 시 run 자동 증가, full/로드 시 최신 run 사용
+run_id: null
+run_date: null   # null → 오늘 YYMMDD
+ckpt_path: null  # 지정 시 run 구조 무시
 
 wandb:
   project: recsys-2026
-  tags: [${model.name}]
+  tags:
+    - ${model.name}
   log_freq: 1
   enabled: true
 ```
@@ -532,18 +537,18 @@ attn_dropout: 0.5
 
 ```yaml
 # conf/train/base.yaml  (RTX 3090 기준값)
-epochs: 300
+epochs: 20
 lr: 0.001
-weight_decay: 1e-4
+weight_decay: 1.0e-4
 train_batch_size: ${model.train_batch_size}   # conf/model/*.yaml · CLI: train.train_batch_size=
 eval_batch_size: 32768
-amp: bf16
+amp: bf16              # RTX 3090 BF16 지원
 num_workers: 4
 pin_memory: true
-early_stopping_patience: 20 # val/ndcg_cart_purchase 기준
+early_stopping_patience: 5    # val/ndcg_cart_purchase 기준
 loss_weights:
   view: 1.0
-  cart: 25.0 # cart→purchase 전환율이 view의 475배 — sweep 범위: 10~50
+  cart: 25.0           # sweep 범위: 10~50
   purchase: 50.0
 ```
 

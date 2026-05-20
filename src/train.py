@@ -54,6 +54,7 @@ def train_epoch(model, loader, optimizer, scaler, device, amp_dtype, model_name,
     is_mbstr    = model_name == "mbstr"
 
     pbar = tqdm(loader, desc=f"  Ep{epoch:3d}", leave=False, dynamic_ncols=True)
+    batch_count = 0
     for batch in pbar:
         optimizer.zero_grad()
 
@@ -80,8 +81,9 @@ def train_epoch(model, loader, optimizer, scaler, device, amp_dtype, model_name,
         scaler.step(optimizer)
         scaler.update()
 
+        batch_count += 1
         total_loss += loss.item()
-        pbar.set_postfix(loss=f"{total_loss / pbar.n:.4f}")
+        pbar.set_postfix(loss=f"{total_loss / batch_count:.4f}")
 
     return total_loss / len(loader)
 

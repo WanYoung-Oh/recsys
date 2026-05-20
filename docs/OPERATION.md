@@ -204,7 +204,7 @@ python src/train.py \
 **확인 사항**
 
 - 콘솔에 `ndcg_cp` (cart+purchase NDCG) 출력
-- `outputs/sasrec/best.pt` 생성
+- `outputs/sasrec/runNNN_YYMMDD/tuning/best.pt` 생성
 - wandb에 `val/ndcg_cart_purchase` 곡선
 - `outputs/<날짜>/<시간>/.hydra/config.yaml` 저장
 
@@ -325,7 +325,7 @@ wandb agent <entity>/recsys-2026/<sweep_id>
 
 ### Phase 2 완료 체크리스트
 
-- [ ] 모델별 `outputs/<model>/best.pt` 및 wandb best `val/ndcg_cart_purchase` 기록
+- [ ] 모델별 `outputs/<model>/runNNN_YYMMDD/tuning/best.pt` 및 wandb best `val/ndcg_cart_purchase` 기록
 - [ ] Val 기준 **상위 1~2개 설정** 후보 목록 정리 (Hydra config 스냅샷 경로 기록)
 - [ ] purchase-only NDCG만 보고 모델을 고르지 않았는지 확인
 
@@ -351,7 +351,7 @@ python src/train.py \
 
 ```bash
 python src/eval_proxy.py model=tisasrec
-python src/eval_proxy.py model=tisasrec ckpt_path=outputs/tisasrec/best.pt
+python src/eval_proxy.py model=tisasrec ckpt_path=outputs/tisasrec/runNNN_YYMMDD/tuning/best.pt
 python src/eval_proxy.py model=cl4srec wandb.enabled=true wandb.name=cl4srec_proxy_only
 ```
 
@@ -507,7 +507,7 @@ python src/train.py model=mbstr    cv=none wandb.tags=[fulltrain]
 **동작 (`cv=none`)**
 
 - Train/Val 분할 없음 → **전체 120일** 시퀀스 학습
-- Val NDCG 없음 → 마지막 epoch(또는 설정된 epoch) 체크포인트를 `outputs/<model>/best.pt`에 저장
+- Val NDCG 없음 → 마지막 epoch(또는 설정된 epoch) 체크포인트를 `outputs/<model>/runNNN_YYMMDD/full/best.pt`에 저장
 - Feb 27~29 **spike 포함** (기본 `data=base`)
 
 ### 5-2. TIFU-KNN Full 예측 (전체 df)
@@ -537,7 +537,7 @@ python src/train.py model=cl4srec  cv=none train.epochs=300
 
 ### Phase 5 완료 체크리스트
 
-- [ ] 제출에 쓸 모든 모델의 `outputs/<model>/best.pt`가 **Full-train**으로 갱신됨
+- [ ] 제출에 쓸 모든 모델의 `outputs/<model>/runNNN_YYMMDD/full/best.pt`가 **Full-train**으로 갱신됨
 - [ ] Val용 체크포인트를 제출에 쓰지 않았는지 확인 (경로·wandb tag `fulltrain`)
 - [ ] `exclude_spike_purchase: false` (기본) 유지
 
@@ -554,7 +554,7 @@ python src/train.py model=cl4srec  cv=none train.epochs=300
 ```bash
 python src/submit.py \
   model=tisasrec \
-  ckpt_path=outputs/tisasrec/best.pt
+  ckpt_path=outputs/tisasrec/runNNN_YYMMDD/full/best.pt
 # → outputs/submission_tisasrec.csv
 ```
 
@@ -754,3 +754,4 @@ python src/ensemble_submit.py
 |------|------|
 | 2026-05-20 | 초안 — PLAN.md Phase 0~6-B 기준 운영 가이드 작성 |
 | 2026-05-20 | 8개 모델 반영 (FEARec·BSARec·SAFERec·MB-STR·TIFU-KNN), train_tifu.py·optimize_ensemble.py 추가, cart boost 통합 업데이트 |
+| 2026-05-21 | 체크포인트 경로 `outputs/<model>/best.pt` → `outputs/<model>/runNNN_YYMMDD/{tuning\|full}/best.pt` 형식으로 전면 반영 |
