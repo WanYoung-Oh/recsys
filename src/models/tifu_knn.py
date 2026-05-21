@@ -61,8 +61,8 @@ class TIFUKNN:
 
     def predict(self, uid: str, top_k: int = 10) -> List[str]:
         scores = self._user_scores.get(uid, {})
-        ranked = sorted(scores, key=scores.get, reverse=True)[:top_k]
-        return [self._idx2item[idx] for idx in ranked if idx in self._idx2item]
+        ranked = sorted(scores, key=scores.get, reverse=True)
+        return [self._idx2item[idx] for idx in ranked if idx in self._idx2item][:top_k]
 
     def predict_all(
         self, user_ids: List[str], top_k: int = 10

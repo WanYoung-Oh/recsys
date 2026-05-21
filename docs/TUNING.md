@@ -69,9 +69,9 @@
 
 | Run ID | cart | purchase | CLI |
 |--------|------|----------|-----|
-| T1-01 | 10 | 50 | `python src/train.py model=sasrec train.loss_weights.cart=10 wandb.name=tune_cart10` |
-| T1-02 | 25 | 50 | `python src/train.py model=sasrec train.loss_weights.cart=25 wandb.name=tune_cart25` |
-| T1-03 | 50 | 50 | `python src/train.py model=sasrec train.loss_weights.cart=50 wandb.name=tune_cart50` |
+| T1-01 | 10 | 50 | `python src/train.py model=sasrec train.loss_weights.cart=10 wandb.name=tune_cart10 wandb.tags=[sasrec,s1]` |
+| T1-02 | 25 | 50 | `python src/train.py model=sasrec train.loss_weights.cart=25 wandb.name=tune_cart25 wandb.tags=[sasrec,s1]` |
+| T1-03 | 50 | 50 | `python src/train.py model=sasrec train.loss_weights.cart=50 wandb.name=tune_cart50 wandb.tags=[sasrec,s1]` |
 
 → Val best인 cart 값을 **S2~S4 전 모델에 동일 적용**.
 
@@ -148,8 +148,8 @@
 # 자동 최적화 (300회, seed=42)
 python src/optimize_ensemble.py
 
-# 시도 횟수 늘리기
-python src/optimize_ensemble.py n_trials=500
+# 시도 횟수 늘리기 (conf/config.yaml n_trials=300 기본)
+python src/optimize_ensemble.py n_trials=500 seed=0
 ```
 
 ---
@@ -224,8 +224,16 @@ python src/ensemble_submit.py
 ## 9. S5 — Proxy (참고만)
 
 ```bash
+# tuning ckpt (기본)
 python src/eval_proxy.py model=tisasrec
-python src/eval_proxy.py model=tisasrec checkpoint.load_phase=tuning
+
+# ckpt·seq_len 명시 (CL4SRec 등)
+python src/eval_proxy.py model=cl4srec model.max_seq_len=100 \
+  ckpt_path=outputs/cl4srec/run001_260520/tuning/best.pt
+
+# Full-train ckpt (eval_proxy는 기본 tuning — full은 ckpt_path로)
+python src/eval_proxy.py model=sasrec \
+  ckpt_path=outputs/sasrec/run003_260520/full/best.pt
 ```
 
 | Val vs Proxy | 해석 | 조치 |
@@ -317,14 +325,16 @@ wandb 또는 스프레드시트에 아래 컬럼으로 기록.
 
 ## 13. CLI 치트시트
 
+Hydra 오버라이드: `키=값` (**`=` 앞뒤 공백 없음**). `wandb.name` 미지정 시 `{model}_seed{seed}`.
+
 ```bash
 # S1 — cart sweep
-python src/train.py model=sasrec train.loss_weights.cart=25 wandb.name=tune_s1_cart25
+python src/train.py model=sasrec train.loss_weights.cart=25 wandb.name=tune_s1_cart25 wandb.tags=[sasrec,s1]
 
 # S2 — 전체 모델 튜닝 (배치·VRAM 주의)
 python src/train.py model=sasrec
 python src/train.py model=tisasrec
-python src/train.py model=cl4srec
+python src/train.py model=cl4srec model.max_seq_len=100
 python src/train.py model=fearec
 python src/train.py model=bsarec
 python src/train.py model=saferec
@@ -356,5 +366,6 @@ python src/ensemble_submit.py     # cart boost 자동 포함
 | 문서 이력 | |
 |-----------|--|
 | 2026-05-20 | 초안 — Val 기준 체계적 튜닝 테이블 |
-| 2026-05-21 | S6 Full-train `best_epoch` 기록·`train.epochs` 반영 가이드 추가 |
+| 2026-05-21 | S6 Full-train `best_epoch` 가이드 · CLI(`wandb.name`, eval_proxy ckpt) 코드 정합 |
 | 2026-05-21 | 체크포인트 경로 형식 반영 (runNNN_YYMMDD/tuning|full), 전체 구현 완료 기준 정리 |
+| 2026-05-21 | 버그 수정 반영: MB-STR 패딩(0→3), saferec·mbstr submit/proxy 지원, TIFU-KNN top_k 보장, ensemble active_models 동적화, optimize_ensemble torch seed 추가 |

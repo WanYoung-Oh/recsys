@@ -193,7 +193,7 @@ class FocalLoss(nn.Module):
 | `conf/data/base.yaml`           | ✅   | spike 포함 기본, `exclude_spike_purchase: false`                                          |
 | `conf/data/spike_excluded.yaml` | ✅   | ablation 비교용                                                                           |
 | `conf/cv/single_holdout.yaml`   | ✅   | val_start=2020-02-09, val_end=2020-02-23                                                  |
-| `conf/train/base.yaml`          | ✅   | epochs=300, lr=0.001, train_batch_size=${model.train_batch_size}, loss_weights            |
+| `conf/train/base.yaml`          | ✅   | epochs=20, lr=0.001, train_batch_size=${model.train_batch_size}, loss_weights            |
 | `conf/model/sasrec.yaml`        | ✅   | hidden=256, n_layers=3, n_heads=4, max_seq_len=50, train_batch_size=4096                   |
 | `conf/model/tisasrec.yaml`      | ✅   | max_seq_len=50, time_span=512, train_batch_size=1024                                      |
 | `conf/model/cl4srec.yaml`       | ✅   | + lmd=0.1, tau=1.0, aug_ratios=0.2, train_batch_size=2048                                 |
@@ -205,7 +205,7 @@ class FocalLoss(nn.Module):
 | `src/cv/holdout.py`             | ✅   | `make_holdout`, `build_gt`, `build_leaderboard_proxy_gt`                                  |
 | `src/metrics.py`                | ✅   | `ndcg_at_k`, batched `evaluate` (BF16 AMP, full-item scoring, freq/behavior/time 지원)    |
 | `src/data/dataset.py`           | ✅   | `load_data`, `build_vocab`, `build_sequences`, `SeqTrainDataset`                          |
-| `src/data/features.py`          | ✅   | `build_time_seq`, `build_freq_seq`, `compute_item_freq`, `build_behavior_seq` + Dataset 클래스 |
+| `src/data/features.py`          | ✅   | `build_time_seq`, `build_freq_seq`, `compute_item_freq`, `build_behavior_seq` + Dataset 클래스 (MB-STR `SeqTrainDatasetWithBehavior` 패딩 3으로 수정) |
 | `src/models/sasrec.py`          | ✅   | Pre-LN, causal mask only (key_padding_mask 제거 — NaN 방지), BPR loss                     |
 | `src/models/tisasrec.py`        | ✅   | log-scale time bucketing, [B,L,L] time_matrix einsum                                      |
 | `src/models/cl4srec.py`         | ✅   | crop/mask/reorder, InfoNCE in-batch negatives                                             |
@@ -213,15 +213,15 @@ class FocalLoss(nn.Module):
 | `src/models/bsarec.py`          | ✅   | BSARecLayer: SA + FFT 저역통과 혼합, learnable α (AAAI 2024)                              |
 | `src/models/saferec.py`         | ✅   | SASRec + view 빈도 임베딩 (log-scale 64-bucket)                                           |
 | `src/models/mbstr.py`           | ✅   | SASRec + view/cart/purchase 행동 타입 임베딩 (padding_idx=3)                              |
-| `src/models/tifu_knn.py`        | ✅   | 비신경망, 그룹 기반 시간 감쇠 스코어 (TIFU-KNN)                                           |
+| `src/models/tifu_knn.py`        | ✅   | 비신경망, 그룹 기반 시간 감쇠 스코어 (TIFU-KNN) — `predict()` top_k 보장 수정             |
 | `src/models/__init__.py`        | ✅   | `build_model(cfg, n_items)` factory (8개 모델 등록)                                       |
 | `src/train.py`                  | ✅   | Hydra 진입점, 전체 파이프라인 (saferec/mbstr/tisasrec 보조 시퀀스 지원)                   |
 | `src/train_tifu.py`             | ✅   | TIFU-KNN 전용 학습·예측 스크립트 → `outputs/tifu_knn/preds.pkl`                          |
 | `src/optimize_ensemble.py`      | ✅   | Val 기준 랜덤 서치 앙상블 가중치 최적화 → `conf/ensemble/rank.yaml` 자동 갱신            |
 | `src/ensemble.py`               | ✅   | `rank_ensemble()` — reciprocal rank fusion                                                |
-| `src/inference.py`              | ✅   | `generate_predictions` (time/freq/behavior 보조 시퀀스 지원), `generate_submission_long`  |
-| `src/ensemble_submit.py`        | ✅   | 랭크 앙상블 + `_cart_boost()` 후처리 → submission CSV                                    |
-| `src/submit.py`                 | ✅   | 단일 모델 체크포인트 로드 → submission CSV                                                |
+| `src/inference.py`              | ✅   | `generate_predictions` (time/freq/behavior 보조 시퀀스 지원), `generate_submission_long`, `validate_submission` (n_users 필수 인자) |
+| `src/ensemble_submit.py`        | ✅   | 랭크 앙상블 + `_cart_boost()` 후처리 → submission CSV (active_models를 rank.yaml에서 동적 파생) |
+| `src/submit.py`                 | ✅   | 단일 모델 체크포인트 로드 → submission CSV (tisasrec·saferec·mbstr 보조 시퀀스 자동 선택) |
 
 ### Val NDCG@10 실험 결과 (cart+purchase GT = 1,065명)
 
@@ -251,6 +251,11 @@ class FocalLoss(nn.Module):
 | CL4SRec NaN loss             | `key_padding_mask` + causal mask 이중 적용 → `softmax(-inf,...,-inf) = NaN`   | **key_padding_mask 완전 제거** (SASRec·TiSASRec·CL4SRec 전체) — 좌패딩 + causal mask only |
 | CUDA OOM (SASRec batch=8192) | attention [B,H,L,L] 누적 VRAM 초과                                            | SASRec≤4096 / TiSASRec≤1024 / CL4SRec≤2048 확정                                           |
 | TiSASRec positional index 오류 | ensemble_submit.py에서 SASRec max_seq_len=100 시퀀스를 TiSASRec(50)에 사용  | 모델별 seq_len 다르면 전용 시퀀스 재빌드                                                  |
+| MB-STR 행동 시퀀스 패딩 불일치 | `SeqTrainDatasetWithBehavior`가 `make_padded_seq`(pad=0)로 `seq_types` 패딩 → `behavior_emb(padding_idx=3)` 불일치로 패딩 위치에서 view(0) 임베딩 오용 | `[3]*pad_len + seq_types` 수동 패딩으로 교체; `_BEHAVIOR_MAP`에 `"pad": 3` 추가 |
+| `submit.py`·`proxy_eval.py` saferec·mbstr 추론 미지원 | `is_tisasrec` 분기만 존재 → saferec/mbstr 실행 시 보조 시퀀스 미전달 | saferec(`freq_sequences`)·mbstr(`behavior_sequences`) 분기 추가 |
+| TIFU-KNN `predict()` top_k 미보장 | 상위 `top_k`개 슬라이스 후 `idx2item` 필터 → 필터 결과가 top_k보다 적을 수 있음 | 전체 정렬 후 필터, 마지막에 `[:top_k]` 적용 |
+| `ensemble_submit.py` active_models 하드코딩 | `["sasrec", "tisasrec", "cl4srec"]` 고정 → rank.yaml 가중치 변경 미반영, 신규 모델 자동 제외 | `list(ensemble_cfg.weights.keys())`로 동적 파생 |
+| `optimize_ensemble.py` torch seed 누락 | `random.seed`·`np.random.seed`만 설정, PyTorch 난수 상태 비고정 → 재현성 불완전 | `torch.manual_seed(seed)` / `torch.cuda.manual_seed_all(seed)` 추가 |
 
 ### 실행 명령어
 
@@ -391,7 +396,8 @@ flowchart TB
 recsys/
 ├── conf/                          # Hydra config 루트
 │   ├── config.yaml                # 최상위 조합 설정 (defaults, seed, wandb)
-│   ├── checkpoint.yaml            # 체크포인트 로드 단계 설정 (load_phase)
+│   ├── checkpoint/                # 체크포인트 로드 단계 (load_phase: full|tuning)
+│   │   └── checkpoint.yaml
 │   ├── data/
 │   │   ├── base.yaml              # 전체 이벤트 (view+cart+purchase), spike 포함 — 기본
 │   │   └── spike_excluded.yaml    # spike purchase 제거 (ablation 비교용)
@@ -407,7 +413,7 @@ recsys/
 │   │   ├── single_holdout.yaml    # val_start=2020-02-09, val_end=2020-02-23
 │   │   └── none.yaml              # enabled: false — 전체 기간 학습
 │   ├── train/
-│   │   └── base.yaml              # epochs=300, lr=0.001, loss_weights, amp=bf16
+│   │   └── base.yaml              # epochs=20, lr=0.001, loss_weights, amp=bf16
 │   └── ensemble/
 │       └── rank.yaml              # 8개 모델 가중치, cart_boost, TIFU-KNN 파라미터
 ├── src/
@@ -486,10 +492,13 @@ ckpt_path: null  # 지정 시 run 구조 무시
 
 wandb:
   project: recsys-2026
+  name: null   # override: wandb.name=tune_cart10
   tags:
     - ${model.name}
   log_freq: 1
   enabled: true
+
+n_trials: 300   # optimize_ensemble.py 전용
 ```
 
 ```yaml
@@ -663,7 +672,7 @@ from omegaconf import DictConfig, OmegaConf
 def main(cfg: DictConfig) -> float:
     wandb.init(
         project=cfg.wandb.project,
-        name=f"{cfg.model.name}_seed{cfg.seed}",
+        name=getattr(cfg.wandb, "name", None) or f"{cfg.model.name}_seed{cfg.seed}",
         config=OmegaConf.to_container(cfg, resolve=True),
         tags=cfg.wandb.tags,
     )
@@ -736,6 +745,7 @@ def main(cfg: DictConfig) -> float:
 >
 > # CV 없이 전체 학습 (최종 제출 전) — train.epochs = 튜닝 best_epoch + 1
 > python src/train.py model=tisasrec cv=none train.epochs=2 wandb.tags=[fulltrain]
+> python src/train.py model=cl4srec cv=none train.epochs=10 model.max_seq_len=100 wandb.tags=[fulltrain]
 > ```
 
 ---

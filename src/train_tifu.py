@@ -5,7 +5,7 @@
 
 실행:
   python src/train_tifu.py
-  python src/train_tifu.py model.tifu_group_count=7 model.tifu_decay_within=0.9
+  # TIFU 하이퍼파라미터: conf/ensemble/rank.yaml (tifu_group_count 등) 편집 후 실행
 """
 
 from __future__ import annotations

@@ -98,7 +98,7 @@ class SeqTrainDatasetWithFreq(torch.utils.data.Dataset):
 
 # ── MB-STR: 행동 타입 피처 ────────────────────────────────────────────────
 
-_BEHAVIOR_MAP = {"view": 0, "cart": 1, "purchase": 2}
+_BEHAVIOR_MAP = {"view": 0, "cart": 1, "purchase": 2, "pad": 3}  # must match models/mbstr.BEHAVIOR_MAP
 
 
 def build_behavior_seq(
@@ -139,9 +139,12 @@ class SeqTrainDatasetWithBehavior(torch.utils.data.Dataset):
         pos = iidx[k]
         neg = np.random.randint(1, self._base.n_items + 1)
 
+        pad_len = self._max_seq_len - len(seq_types)
+        behavior_tensor = torch.tensor([3] * pad_len + seq_types, dtype=torch.long)
+
         return (
             make_padded_seq(seq_items, self._max_seq_len),
-            make_padded_seq(seq_types, self._max_seq_len),
+            behavior_tensor,
             torch.tensor(pos,    dtype=torch.long),
             torch.tensor(neg,    dtype=torch.long),
             torch.tensor(weight, dtype=torch.float),
@@ -156,7 +159,6 @@ class SeqTrainDatasetWithTime(torch.utils.data.Dataset):
 
     def __init__(self, seqs, n_items, event_weights, max_seq_len=50):
         from .dataset import SeqTrainDataset
-        import numpy as np
         self._base = SeqTrainDataset(seqs, n_items, event_weights, max_seq_len)
         self._seqs = seqs
         self._max_seq_len = max_seq_len
@@ -165,7 +167,6 @@ class SeqTrainDatasetWithTime(torch.utils.data.Dataset):
         return len(self._base)
 
     def __getitem__(self, idx):
-        import numpy as np
         u_idx, k, weight = self._base._samples[idx]
         uid  = self._base._uid_list[u_idx]
         data = self._seqs[uid]

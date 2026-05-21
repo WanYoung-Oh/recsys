@@ -1,9 +1,9 @@
-"""학습된 모델 로드 → 앙상블 추론 → 제출 CSV 저장.
+"""학습된 모델 로드 → 추론 → 제출 CSV 저장.
 
 실행 예시:
   python src/submit.py model=tisasrec
   python src/submit.py model=tisasrec run_id=run001
-  python src/submit.py ensemble=rank  # 앙상블 모드 (ckpt_paths 지정 필요)
+  python src/submit.py model=sasrec ckpt_path=outputs/sasrec/run003_260520/full/best.pt
 """
 
 import os
@@ -51,19 +51,28 @@ def main(cfg: DictConfig):
     ckpt  = torch.load(ckpt_path, map_location=device)
     model.load_state_dict(ckpt["model"])
 
-    is_tisasrec = cfg.model.name == "tisasrec"
-    if is_tisasrec:
+    model_name = cfg.model.name
+    time_sequences = freq_sequences = behavior_sequences = None
+
+    if model_name == "tisasrec":
         from data.features import build_time_seq
-        val_times = build_time_seq(seqs, cfg.model.max_seq_len)
-    else:
-        val_times = None
+        time_sequences = build_time_seq(seqs, cfg.model.max_seq_len)
+    elif model_name == "saferec":
+        from data.features import build_freq_seq, compute_item_freq
+        item_freq = compute_item_freq(df, item2idx, cfg.model.n_freq_buckets)
+        freq_sequences = build_freq_seq(seqs, cfg.model.max_seq_len, item_freq)
+    elif model_name == "mbstr":
+        from data.features import build_behavior_seq
+        behavior_sequences = build_behavior_seq(seqs, cfg.model.max_seq_len)
 
     print("▶ 추론 중...")
     preds = generate_predictions(
         model, all_user_ids, val_seqs, idx2item, device,
         batch_size=cfg.train.eval_batch_size,
         amp_dtype=amp_dtype,
-        time_sequences=val_times,
+        time_sequences=time_sequences,
+        freq_sequences=freq_sequences,
+        behavior_sequences=behavior_sequences,
     )
 
     sub_df = generate_submission_long(preds, all_user_ids)

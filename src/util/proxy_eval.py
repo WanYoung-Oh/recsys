@@ -28,10 +28,19 @@ def evaluate_leaderboard_proxy(
     full_seqs = build_sequences(df, item2idx, cfg.model.max_seq_len)
     full_val_seqs = build_val_sequences(full_seqs, cfg.model.max_seq_len)
 
-    proxy_times = None
-    if cfg.model.name == "tisasrec":
+    model_name = cfg.model.name
+    proxy_times = proxy_freqs = proxy_behaviors = None
+
+    if model_name == "tisasrec":
         from data.features import build_time_seq
         proxy_times = build_time_seq(full_seqs, cfg.model.max_seq_len)
+    elif model_name == "saferec":
+        from data.features import build_freq_seq, compute_item_freq
+        item_freq = compute_item_freq(df, item2idx, cfg.model.n_freq_buckets)
+        proxy_freqs = build_freq_seq(full_seqs, cfg.model.max_seq_len, item_freq)
+    elif model_name == "mbstr":
+        from data.features import build_behavior_seq
+        proxy_behaviors = build_behavior_seq(full_seqs, cfg.model.max_seq_len)
 
     model.eval()
     proxy_ndcg = evaluate(
@@ -44,5 +53,7 @@ def evaluate_leaderboard_proxy(
         cfg.train.eval_batch_size,
         amp_dtype=amp_dtype,
         val_times=proxy_times,
+        val_freqs=proxy_freqs,
+        val_behaviors=proxy_behaviors,
     )
     return proxy_ndcg, n_gt

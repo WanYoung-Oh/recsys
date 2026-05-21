@@ -1,11 +1,11 @@
 # OPERATION — 추천 시스템 운영 가이드
 
-| 항목 | 내용 |
-|------|------|
-| 대상 독자 | 실험·학습·제출을 수행하는 운영자 |
-| 전제 | [`PLAN.md`](PLAN.md)에 정의된 **모든 기능이 구현·연결 완료**된 상태 |
-| 관련 문서 | [PLAN.md](PLAN.md) (설계·EDA), [README.md](../README.md) (개요), [TUNING.md](TUNING.md) (튜닝) |
-| 작업 디렉터리 | **항상 레포 루트** `recsys/` |
+| 항목          | 내용                                                                                           |
+| ------------- | ---------------------------------------------------------------------------------------------- |
+| 대상 독자     | 실험·학습·제출을 수행하는 운영자                                                               |
+| 전제          | [`PLAN.md`](PLAN.md)에 정의된 **모든 기능이 구현·연결 완료**된 상태                            |
+| 관련 문서     | [PLAN.md](PLAN.md) (설계·EDA), [README.md](../README.md) (개요), [TUNING.md](TUNING.md) (튜닝) |
+| 작업 디렉터리 | **항상 레포 루트** `recsys/`                                                                   |
 
 ---
 
@@ -36,12 +36,12 @@ Phase 6  추론·앙상블·cart boost 후처리·제출 CSV 생성
 
 **핵심 원칙**
 
-| 구분 | 기간 | 역할 |
-|------|------|------|
-| **Train** | 11/01 ~ 02/08 | 학습 데이터 |
-| **Val** | 02/09 ~ 02/22 | **튜닝·Early stopping·모델 선택** (`val/ndcg_cart_purchase`) |
-| **leaderboard_proxy** | 02/23 ~ 02/29 | **참고용** 오프라인 NDCG (튜닝·가중치 변경 ❌) |
-| **Full-train** | 11/01 ~ 02/29 | **최종 제출용** 체크포인트 (`cv=none`) |
+| 구분                  | 기간          | 역할                                                         |
+| --------------------- | ------------- | ------------------------------------------------------------ |
+| **Train**             | 11/01 ~ 02/08 | 학습 데이터                                                  |
+| **Val**               | 02/09 ~ 02/22 | **튜닝·Early stopping·모델 선택** (`val/ndcg_cart_purchase`) |
+| **leaderboard_proxy** | 02/23 ~ 02/29 | **참고용** 오프라인 NDCG (튜닝·가중치 변경 ❌)               |
+| **Full-train**        | 11/01 ~ 02/29 | **최종 제출용** 체크포인트 (`cv=none`)                       |
 
 ---
 
@@ -65,25 +65,26 @@ cp .env.template .env
 nvidia-smi
 ```
 
-| 모델 | 기본 `train_batch_size` | VRAM (BF16, max_seq_len=50, 대략) | 설정 위치 |
-|------|-------------------------|-----------------------------------|-----------|
-| SASRec | 4096 | ~6 GB | `conf/model/sasrec.yaml` |
-| TiSASRec | 1024 | ~9 GB (time_matrix [B,L,L]) | `conf/model/tisasrec.yaml` |
-| CL4SRec | 2048 | ~10 GB (대조 뷰 2개) | `conf/model/cl4srec.yaml` |
-| FEARec | 2048 | ~10 GB (FFT 증강 뷰) | `conf/model/fearec.yaml` |
-| BSARec | 4096 | ~6 GB | `conf/model/bsarec.yaml` |
-| SAFERec | 4096 | ~6 GB | `conf/model/saferec.yaml` |
-| MB-STR | 4096 | ~6 GB | `conf/model/mbstr.yaml` |
-| TIFU-KNN | — (CPU) | < 1 GB | `src/train_tifu.py` |
+| 모델     | 기본 `train_batch_size` | VRAM (BF16, max_seq_len=50, 대략) | 설정 위치                  |
+| -------- | ----------------------- | --------------------------------- | -------------------------- |
+| SASRec   | 4096                    | ~6 GB                             | `conf/model/sasrec.yaml`   |
+| TiSASRec | 1024                    | ~9 GB (time_matrix [B,L,L])       | `conf/model/tisasrec.yaml` |
+| CL4SRec  | 2048                    | ~10 GB (대조 뷰 2개)              | `conf/model/cl4srec.yaml`  |
+| FEARec   | 2048                    | ~10 GB (FFT 증강 뷰)              | `conf/model/fearec.yaml`   |
+| BSARec   | 4096                    | ~6 GB                             | `conf/model/bsarec.yaml`   |
+| SAFERec  | 4096                    | ~6 GB                             | `conf/model/saferec.yaml`  |
+| MB-STR   | 4096                    | ~6 GB                             | `conf/model/mbstr.yaml`    |
+| TIFU-KNN | — (CPU)                 | < 1 GB                            | `src/train_tifu.py`        |
 
 OOM 시: `train.train_batch_size=` 로 **절반**씩 낮춰 재실행 (`conf/train/base.yaml`은 `${model.train_batch_size}` 참조).
 
 ### Hydra 실행 규칙
 
 - **cwd = `recsys/`** (프로젝트 루트)
-- 설정 오버라이드: `키=값` 형태 (`train.lr=0.0005`, `cv=none`)
+- 설정 오버라이드: `키=값` 형태 — **`=` 앞뒤 공백 없음** (`train.epochs=11` ✅ · `train.epochs = 11` ❌)
+- 예: `train.lr=0.0005`, `cv=none`, `wandb.name=tune_cart10`, `wandb.tags=[sasrec,s1]`
 - 실행 설정 스냅샷: `outputs/YYYY-MM-DD/HH-MM-SS/.hydra/config.yaml`
-- Best 체크포인트: `outputs/<model>/runNNN_YYMMDD/tuning/best.pt` (튜닝·run **자동 증가**) / `.../full/best.pt` (Full-train·**최신 run**)
+- Best 체크포인트: `outputs/<model>/runNNN_YYMMDD/tuning/best.pt` (튜닝·run **자동 증가**) / `.../full/best.pt` (Full-train·run **자동 증가**)
 
 ### wandb
 
@@ -95,18 +96,20 @@ python src/train.py model=sasrec wandb.enabled=false
 python src/train.py model=tisasrec \
   wandb.tags=[tisasrec,phase2,tune] \
   wandb.name=tisasrec_seq50_ep300
+
+# wandb.name 생략 시 자동: {model.name}_seed{seed} (예: sasrec_seed42)
 ```
 
 **모니터링 지표**
 
-| 지표 | 용도 |
-|------|------|
-| `val/ndcg_cart_purchase` | **튜닝·Early stopping 기준** |
-| `val/ndcg_purchase_only` | 보조 (표본 ~37명, 참고만) |
-| `val/gt_user_count` | GT 커버리지 |
-| `leaderboard_proxy/ndcg` | 참고 (`cv.run_leaderboard_proxy=true`) |
-| `train_loss` | 과적합 |
-| `val/best_ndcg_cart_purchase` | Run 종료 시 best 요약 |
+| 지표                          | 용도                                   |
+| ----------------------------- | -------------------------------------- |
+| `val/ndcg_cart_purchase`      | **튜닝·Early stopping 기준**           |
+| `val/ndcg_purchase_only`      | 보조 (표본 ~37명, 참고만)              |
+| `val/gt_user_count`           | GT 커버리지                            |
+| `leaderboard_proxy/ndcg`      | 참고 (`cv.run_leaderboard_proxy=true`) |
+| `train_loss`                  | 과적합                                 |
+| `val/best_ndcg_cart_purchase` | Run 종료 시 best 요약                  |
 
 ---
 
@@ -260,7 +263,8 @@ done
 for C in 10 25 50; do
   python src/train.py model=sasrec \
     train.loss_weights.cart=$C \
-    wandb.name=sasrec_cart${C}
+    wandb.name=sasrec_cart${C} \
+    wandb.tags=[sasrec,s1,cart${C}]
 done
 ```
 
@@ -312,16 +316,21 @@ python src/train.py model=tisasrec data=spike_excluded \
   wandb.tags=[ablation,spike_excluded]
 ```
 
-### 2-6. wandb Sweep (loss·seq_len 등)
+### 2-6. wandb Sweep (선택, 미구현)
 
-`conf/sweep/`에 sweep YAML이 있다고 가정 (PLAN 완료 시):
+`conf/sweep/` 디렉터리는 **아직 없음**. cart·seq_len 등 grid는 **§2-1 CLI for 루프** 또는 아래처럼 수동 실행.
 
 ```bash
-wandb sweep conf/sweep/cart_weight.yaml
-wandb agent <entity>/recsys-2026/<sweep_id>
+# cart sweep 예 (wandb.name으로 run 구분)
+for C in 10 25 50; do
+  python src/train.py model=sasrec \
+    train.loss_weights.cart=$C \
+    wandb.name=sasrec_cart${C} \
+    wandb.tags=[sasrec,s1,cart${C}]
+done
 ```
 
-또는 단일 파라미터 CLI 오버라이드로 grid 수행 (위 2-1 예시).
+(wandb Sweep YAML 도입 시: `wandb sweep conf/sweep/cart_weight.yaml` → `wandb agent …`)
 
 ### Phase 2 완료 체크리스트
 
@@ -337,34 +346,49 @@ wandb agent <entity>/recsys-2026/<sweep_id>
 
 **주의**: proxy 점수로 하이퍼파라미터·앙상블 가중치를 **변경하지 않는다**.
 
-```bash
-python src/train.py \
-  model=tisasrec \
-  cv.run_leaderboard_proxy=true \
-  train.epochs=1 \
-  train.early_stopping_patience=99 \
-  wandb.tags=[proxy,sanity] \
-  wandb.name=tisasrec_proxy_check
-```
-
-**이미 학습된 체크포인트만** 평가 (재학습 없음):
+**방법 A — 이미 저장된 ckpt만 평가 (권장, 재학습 없음)**
 
 ```bash
+# 기본: 최신 run의 tuning/best.pt
 python src/eval_proxy.py model=tisasrec
-python src/eval_proxy.py model=tisasrec ckpt_path=outputs/tisasrec/runNNN_YYMMDD/tuning/best.pt
-python src/eval_proxy.py model=cl4srec wandb.enabled=true wandb.name=cl4srec_proxy_only
+
+# 경로·run 지정
+python src/eval_proxy.py model=tisasrec ckpt_path=outputs/tisasrec/run001_260520/tuning/best.pt
+
+# CL4SRec: 학습 시 max_seq_len과 동일하게 (예: 100)
+python src/eval_proxy.py model=cl4srec model.max_seq_len=100 \
+  ckpt_path=outputs/cl4srec/run001_260520/tuning/best.pt \
+  wandb.name=cl4srec_proxy_eval
+
+# Full-train ckpt 평가 (eval_proxy 기본은 tuning — full은 ckpt_path로)
+python src/eval_proxy.py model=sasrec \
+  ckpt_path=outputs/sasrec/run003_260520/full/best.pt \
+  wandb.name=sasrec_proxy_full
 ```
 
-- `cv=none` Full-train 체크포인트도 사용 가능
-- 기본 경로: 최신 run의 `tuning/best.pt` (`eval_proxy`) · `full/best.pt` (`submit`)
+**방법 B — 튜닝 학습 직후 proxy (학습+평가 한 번에)**
+
+튜닝 epoch 전체를 돌린 뒤 best ckpt로 proxy를 실행한다 (`train.epochs=1` 단축 ❌).
+
+```bash
+python src/train.py model=tisasrec cv.run_leaderboard_proxy=true \
+  wandb.tags=[proxy,sanity] wandb.name=tisasrec_proxy_after_tune
+```
+
+**체크포인트 경로**
+
+| 스크립트 | 기본 로드 | 비고 |
+|----------|-----------|------|
+| `eval_proxy.py` | `tuning/best.pt` | Full-train ckpt → `ckpt_path=.../full/best.pt` |
+| `submit.py` | `full/best.pt` | `conf/checkpoint/checkpoint.yaml` `load_phase: full` |
 
 **해석**
 
-| 패턴 | 의미 | 조치 |
-|------|------|------|
-| Val↑ Proxy↑ | 평시·스파이크 주간 모두 양호 | Full-train 후보로 유지 |
-| Val↑ Proxy↓ | 평소 패턴에 과적합 가능 | TIFU 비중↓, MB-STR·cart 부스트 검토 |
-| Val↓ Proxy↑ | Val 과소평가 가능 | Full-train·후처리 비중↑ (설정은 Val 기준 유지) |
+| 패턴        | 의미                         | 조치                                           |
+| ----------- | ---------------------------- | ---------------------------------------------- |
+| Val↑ Proxy↑ | 평시·스파이크 주간 모두 양호 | Full-train 후보로 유지                         |
+| Val↑ Proxy↓ | 평소 패턴에 과적합 가능      | TIFU 비중↓, MB-STR·cart 부스트 검토            |
+| Val↓ Proxy↑ | Val 과소평가 가능            | Full-train·후처리 비중↑ (설정은 Val 기준 유지) |
 
 ---
 
@@ -411,12 +435,12 @@ python src/train.py \
 
 wandb Table 또는 스프레드시트에 정리:
 
-| model | val/ndcg_cart_purchase | proxy/ndcg (참고) | 비고 |
-|-------|------------------------|-------------------|------|
-| tisasrec | | | 시간 CV=4.12 |
-| cl4srec | | | 희소성 |
-| bsarec | | | 주파수 |
-| mbstr | | | cart→purchase |
+| model    | val/ndcg_cart_purchase | proxy/ndcg (참고) | 비고          |
+| -------- | ---------------------- | ----------------- | ------------- |
+| tisasrec |                        |                   | 시간 CV=4.12  |
+| cl4srec  |                        |                   | 희소성        |
+| bsarec   |                        |                   | 주파수        |
+| mbstr    |                        |                   | cart→purchase |
 
 **Full-train 대상**: Val 상위 **3~4개** 딥 모델 + (선택) TIFU-KNN.
 
@@ -452,13 +476,13 @@ python src/optimize_ensemble.py n_trials=500 seed=0
 
 ```yaml
 weights:
-  sasrec:   1.00
+  sasrec: 1.00
   tisasrec: 0.35
-  cl4srec:  0.20
-  fearec:   0.30
-  bsarec:   0.25
-  saferec:  0.20
-  mbstr:    0.40
+  cl4srec: 0.20
+  fearec: 0.30
+  bsarec: 0.25
+  saferec: 0.20
+  mbstr: 0.40
   tifu_knn: 0.15
 top_k: 10
 cart_boost: true
@@ -515,11 +539,11 @@ python src/train.py model=mbstr    cv=none wandb.tags=[fulltrain]
 
 Phase 2~4 튜닝 run마다 **실험 테이블에 `best_epoch`를 기록**한 뒤, Full-train `train.epochs`에 반영한다.
 
-| 구분 | 사용 여부 |
-|------|-----------|
-| 튜닝 **`best_epoch`** (Val NDCG 최고) | ✅ Full-train `train.epochs` 기준 |
-| **early stop epoch** (Val 정체로 종료) | ❌ Full-train에 사용하지 않음 |
-| 기본 `train.epochs=20` | ❌ 튜닝 best와 다르면 과적합·미학습 위험 |
+| 구분                                   | 사용 여부                                |
+| -------------------------------------- | ---------------------------------------- |
+| 튜닝 **`best_epoch`** (Val NDCG 최고)  | ✅ Full-train `train.epochs` 기준        |
+| **early stop epoch** (Val 정체로 종료) | ❌ Full-train에 사용하지 않음            |
+| 기본 `train.epochs=20`                 | ❌ 튜닝 best와 다르면 과적합·미학습 위험 |
 
 **확인 위치:** wandb `best_epoch` · `tuning/best.pt`의 `epoch` 키 · [TUNING.md §10](TUNING.md#10-s6--full-train--제출)
 
@@ -556,8 +580,8 @@ cd /data/ephemeral/home/recsys
 
 # 튜닝 best_epoch=1 → train.epochs=2
 python src/train.py model=tisasrec cv=none train.epochs=2 wandb.tags=[fulltrain]
-# 튜닝 best_epoch=9 → train.epochs=10
-python src/train.py model=cl4srec  cv=none train.epochs=10 wandb.tags=[fulltrain]
+# 튜닝 best_epoch=9, seq_len=100 → train.epochs=10
+python src/train.py model=cl4srec cv=none train.epochs=10 model.max_seq_len=100 wandb.tags=[fulltrain]
 ```
 
 ### Phase 5 완료 체크리스트
@@ -579,9 +603,10 @@ python src/train.py model=cl4srec  cv=none train.epochs=10 wandb.tags=[fulltrain
 ### 6-1. 단일 모델 제출
 
 ```bash
-python src/submit.py \
-  model=tisasrec \
-  ckpt_path=outputs/tisasrec/runNNN_YYMMDD/full/best.pt
+python src/submit.py model=tisasrec
+# 또는 ckpt/run 명시
+python src/submit.py model=tisasrec run_id=run001
+python src/submit.py model=tisasrec ckpt_path=outputs/tisasrec/run001_260520/full/best.pt
 # → outputs/submission_tisasrec.csv
 ```
 
@@ -675,10 +700,10 @@ Val 평가(`optimize_ensemble.py`)에서는 train_df(Val 이전)만 사용.
 cd /data/ephemeral/home/recsys
 
 # ① 튜닝 (이미 완료했다면 생략)
-python src/train.py model=sasrec   wandb.name=tune_final
-python src/train.py model=tisasrec wandb.name=tune_final
-python src/train.py model=cl4srec  wandb.name=tune_final
-python src/train.py model=mbstr    wandb.name=tune_final
+python src/train.py model=sasrec   wandb.name=sasrec_tune_final wandb.tags=[tune,final]
+python src/train.py model=tisasrec wandb.name=tisasrec_tune_final wandb.tags=[tune,final]
+python src/train.py model=cl4srec  wandb.name=cl4srec_tune_final  wandb.tags=[tune,final] model.max_seq_len=100
+python src/train.py model=mbstr    wandb.name=mbstr_tune_final    wandb.tags=[tune,final]
 # 추가 모델: fearec / bsarec / saferec
 
 # ② 앙상블 가중치 최적화 (Val 기준)
@@ -689,7 +714,7 @@ python src/eval_proxy.py model=tisasrec
 
 # ④ Full-train (앙상블에 사용할 모든 모델 — train.epochs = 튜닝 best_epoch + 1)
 python src/train.py model=tisasrec cv=none train.epochs=2 wandb.tags=[fulltrain]
-python src/train.py model=cl4srec  cv=none train.epochs=10 wandb.tags=[fulltrain]
+python src/train.py model=cl4srec  cv=none train.epochs=10 model.max_seq_len=100 wandb.tags=[fulltrain]
 python src/train.py model=mbstr    cv=none train.epochs=<best_epoch+1> wandb.tags=[fulltrain]
 
 # ⑤ TIFU-KNN 예측 재생성 (전체 df 기준)
@@ -706,15 +731,15 @@ python src/ensemble_submit.py
 
 ## 장애 대응 (Troubleshooting)
 
-| 증상 | 원인 | 조치 |
-|------|------|------|
-| CUDA OOM | batch 과대 | `train.train_batch_size` 절반, TiSASRec≤1024, CL4SRec≤2048 |
-| NaN loss | mask 이중 적용 등 | PLAN: key_padding_mask 제거·causal only 확인 |
-| Val NDCG 비정상적으로 높음 | val_df로 시퀀스 빌드 (누수) | `build_sequences(train_df)`만 사용 |
-| 제출 행 수 불일치 | 유저 누락·중복 | `validate_submission` 재실행 |
-| wandb 미로깅 | API 키·enabled | `.env`, `wandb.enabled=true` |
-| Hydra config not found | cwd 오류 | 반드시 `recsys/`에서 실행 |
-| 앙상블 스킵 | ckpt 없음 | Phase 5 Full-train 완료 여부 확인 |
+| 증상                       | 원인                        | 조치                                                       |
+| -------------------------- | --------------------------- | ---------------------------------------------------------- |
+| CUDA OOM                   | batch 과대                  | `train.train_batch_size` 절반, TiSASRec≤1024, CL4SRec≤2048 |
+| NaN loss                   | mask 이중 적용 등           | PLAN: key_padding_mask 제거·causal only 확인               |
+| Val NDCG 비정상적으로 높음 | val_df로 시퀀스 빌드 (누수) | `build_sequences(train_df)`만 사용                         |
+| 제출 행 수 불일치          | 유저 누락·중복              | `validate_submission` 재실행                               |
+| wandb 미로깅               | API 키·enabled              | `.env`, `wandb.enabled=true`                               |
+| Hydra config not found     | cwd 오류                    | 반드시 `recsys/`에서 실행                                  |
+| 앙상블 스킵                | ckpt 없음                   | Phase 5 Full-train 완료 여부 확인                          |
 
 ---
 
@@ -722,23 +747,23 @@ python src/ensemble_submit.py
 
 ### 학습
 
-| 목적 | 명령 |
-|------|------|
-| 기본 튜닝 | `python src/train.py model=<name>` |
-| Full-train | `python src/train.py model=<name> cv=none train.epochs=<best_epoch+1>` |
-| Proxy (학습 직후) | `python src/train.py model=<name> cv.run_leaderboard_proxy=true` |
-| Proxy만 (ckpt) | `python src/eval_proxy.py model=<name> [ckpt_path=...]` |
-| spike 제외 | `python src/train.py data=spike_excluded` |
-| wandb 끄기 | `python src/train.py wandb.enabled=false` |
+| 목적              | 명령                                                                   |
+| ----------------- | ---------------------------------------------------------------------- |
+| 기본 튜닝         | `python src/train.py model=<name>`                                     |
+| Full-train        | `python src/train.py model=<name> cv=none train.epochs=<best_epoch+1>` |
+| Proxy (학습 직후) | `python src/train.py model=<name> cv.run_leaderboard_proxy=true`       |
+| Proxy만 (ckpt)    | `python src/eval_proxy.py model=<name> [ckpt_path=...] [model.max_seq_len=…]` |
+| spike 제외        | `python src/train.py data=spike_excluded`                              |
+| wandb 끄기        | `python src/train.py wandb.enabled=false`                              |
 
 ### 제출 및 앙상블
 
-| 목적 | 명령 |
-|------|------|
-| 단일 모델 | `python src/submit.py model=<name>` |
-| TIFU-KNN 예측 생성 | `python src/train_tifu.py` |
-| 앙상블 가중치 최적화 | `python src/optimize_ensemble.py` |
-| 앙상블 (cart boost 포함) | `python src/ensemble_submit.py` |
+| 목적                     | 명령                                |
+| ------------------------ | ----------------------------------- |
+| 단일 모델                | `python src/submit.py model=<name>` |
+| TIFU-KNN 예측 생성       | `python src/train_tifu.py`          |
+| 앙상블 가중치 최적화     | `python src/optimize_ensemble.py`   |
+| 앙상블 (cart boost 포함) | `python src/ensemble_submit.py`     |
 
 ### 지원 `model=` 이름 (구현 완료)
 
@@ -749,15 +774,15 @@ python src/ensemble_submit.py
 
 ## 산출물 경로
 
-| 경로 | 설명 |
-|------|------|
-| `outputs/<model>/runNNN_YYMMDD/tuning/best.pt` | 튜닝 ckpt |
-| `outputs/<model>/runNNN_YYMMDD/full/best.pt` | Full-train ckpt |
-| `outputs/submission_<model>.csv` | 단일 모델 제출 |
-| `outputs/submission_ensemble_*.csv` | 앙상블 제출 |
-| `outputs/YYYY-MM-DD/HH-MM-SS/.hydra/` | 실행별 설정 스냅샷 |
-| `outputs/tifu_knn/preds.pkl` | TIFU-KNN 예측 캐시 (`train_tifu.py`) |
-| wandb project `recsys-2026` | 실험 이력 |
+| 경로                                           | 설명                                 |
+| ---------------------------------------------- | ------------------------------------ |
+| `outputs/<model>/runNNN_YYMMDD/tuning/best.pt` | 튜닝 ckpt                            |
+| `outputs/<model>/runNNN_YYMMDD/full/best.pt`   | Full-train ckpt                      |
+| `outputs/submission_<model>.csv`               | 단일 모델 제출                       |
+| `outputs/submission_ensemble_*.csv`            | 앙상블 제출                          |
+| `outputs/YYYY-MM-DD/HH-MM-SS/.hydra/`          | 실행별 설정 스냅샷                   |
+| `outputs/tifu_knn/preds.pkl`                   | TIFU-KNN 예측 캐시 (`train_tifu.py`) |
+| wandb project `recsys-2026`                    | 실험 이력                            |
 
 ---
 
@@ -777,8 +802,11 @@ python src/ensemble_submit.py
 
 ## 문서 이력
 
-| 날짜 | 내용 |
-|------|------|
-| 2026-05-20 | 초안 — PLAN.md Phase 0~6-B 기준 운영 가이드 작성 |
+| 날짜       | 내용                                                                                                                     |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------ |
+| 2026-05-20 | 초안 — PLAN.md Phase 0~6-B 기준 운영 가이드 작성                                                                         |
 | 2026-05-20 | 8개 모델 반영 (FEARec·BSARec·SAFERec·MB-STR·TIFU-KNN), train_tifu.py·optimize_ensemble.py 추가, cart boost 통합 업데이트 |
-| 2026-05-21 | 체크포인트 경로 `outputs/<model>/best.pt` → `outputs/<model>/runNNN_YYMMDD/{tuning\|full}/best.pt` 형식으로 전면 반영 |
+| 2026-05-21 | 체크포인트 경로 `outputs/<model>/best.pt` → `outputs/<model>/runNNN_YYMMDD/{tuning\|full}/best.pt` 형식으로 전면 반영    |
+| 2026-05-21 | CLI 정합: `wandb.name` 지원, Hydra `=` 공백 금지, eval_proxy/proxy·Full-train ckpt 구분, sweep 미구현 명시               |
+| 2026-05-21 | Full-train도 새 run 디렉터리 자동 생성으로 변경 (기존 run 덮어쓰기 제거) — Hydra 규칙 설명 업데이트                      |
+| 2026-05-21 | 코드 버그 수정 반영: MB-STR 패딩 불일치, submit·proxy_eval saferec/mbstr 지원, TIFU-KNN top_k, ensemble active_models 동적화 |

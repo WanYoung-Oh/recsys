@@ -2,9 +2,9 @@
 
 실행 예시:
   python src/eval_proxy.py model=tisasrec
-  python src/eval_proxy.py model=tisasrec
   python src/eval_proxy.py model=tisasrec ckpt_path=outputs/tisasrec/run001_260520/tuning/best.pt
-  python src/eval_proxy.py model=cl4srec wandb.enabled=true wandb.name=cl4srec_proxy_eval
+  python src/eval_proxy.py model=cl4srec model.max_seq_len=100 ckpt_path=outputs/cl4srec/run001_260520/tuning/best.pt
+  python src/eval_proxy.py model=sasrec ckpt_path=outputs/sasrec/run003_260520/full/best.pt
 """
 
 import os
@@ -32,7 +32,7 @@ def main(cfg: DictConfig) -> float:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     amp_dtype = torch.bfloat16 if cfg.train.amp == "bf16" else torch.float16
 
-    # proxy는 기본 tuning ckpt (오버라이드: checkpoint.load_phase=full)
+    # proxy 기본 tuning ckpt; Full-train ckpt: ckpt_path=outputs/.../full/best.pt
     ckpt_path = str(
         get_checkpoint_path(cfg, orig_cwd, for_training=False, load_phase="tuning")
     )

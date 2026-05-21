@@ -98,7 +98,7 @@ def main(cfg: DictConfig) -> float:
     if cfg.wandb.enabled:
         wandb.init(
             project=cfg.wandb.project,
-            name=f"{cfg.model.name}_seed{cfg.seed}",
+            name=getattr(cfg.wandb, "name", None) or f"{cfg.model.name}_seed{cfg.seed}",
             config=OmegaConf.to_container(cfg, resolve=True),
             tags=list(cfg.wandb.tags),
         )

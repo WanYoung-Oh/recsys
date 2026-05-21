@@ -85,8 +85,7 @@ def main():
     amp_dtype = torch.bfloat16
 
     ensemble_cfg = OmegaConf.load(ROOT / "conf" / "ensemble" / "rank.yaml")
-    # 현재 학습 완료된 모델만 사용 (tifu_knn 제외)
-    active_models = ["sasrec", "tisasrec", "cl4srec"]
+    active_models = list(ensemble_cfg.weights.keys())
     raw_weights   = {m: ensemble_cfg.weights[m] for m in active_models}
     total = sum(raw_weights.values())
     weights = {m: w / total for m, w in raw_weights.items()}

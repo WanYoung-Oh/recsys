@@ -18,7 +18,11 @@ ckpt_path: null  # 지정 시 run 구조 무시
 
 wandb:
   project: recsys-2026
+  name: null   # null → {model.name}_seed{seed}; override: wandb.name=tune_cart10
   tags:
     - ${model.name}
   log_freq: 1
   enabled: true
+
+# optimize_ensemble.py 전용 (train.py 무시)
+n_trials: 300

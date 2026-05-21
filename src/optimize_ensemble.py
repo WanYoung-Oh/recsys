@@ -153,6 +153,8 @@ def main(cfg: DictConfig):
     seed     = cfg.get("seed", 42)
     random.seed(seed)
     np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
     best_score  = -1.0
     best_weights = {m: 1.0 for m in active}

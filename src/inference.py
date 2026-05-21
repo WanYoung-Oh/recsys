@@ -64,7 +64,7 @@ def generate_submission_long(
     return pd.DataFrame(rows)
 
 
-def validate_submission(sub_df: pd.DataFrame, n_users: int = 638257, top_k: int = 10):
+def validate_submission(sub_df: pd.DataFrame, n_users: int, top_k: int = 10):
     assert len(sub_df) == n_users * top_k, f"행 수 불일치: {len(sub_df)}"
     vc = sub_df.groupby("user_id").size()
     assert (vc == top_k).all(), "유저당 행 수가 10이 아닌 유저 존재"
