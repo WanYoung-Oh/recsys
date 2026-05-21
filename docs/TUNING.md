@@ -363,6 +363,74 @@ python src/ensemble_submit.py     # cart boost 자동 포함
 - [PLAN.md](PLAN.md) — EDA 근거·모델 우선순위
 - [README.md](../README.md) — 파이프라인 개요
 
+---
+
+## 15. Feature Engineering 검토
+
+> **검토 일자**: 2026-05-21  
+> **결론**: 구현 복잡도 대비 기대 효과 순서 — `cat_l2/brand 임베딩 > price tier 임베딩 > 기타`. 현재 미완인 앙상블 튜닝·MB-STR/BSARec 실험이 우선, Feature Engineering은 후순위.
+
+### 현재 이미 활용 중인 피처 신호
+
+핵심 behavioral signal은 이미 모델별로 커버되고 있습니다.
+
+| 피처 | 활용 모델 | 구현 위치 |
+|------|-----------|-----------|
+| 아이템 간 시간 간격 | TiSASRec | `data/features.py` `build_time_seq` |
+| view 빈도 버킷 (log-scale 64bucket) | SAFERec | `data/features.py` `compute_item_freq` / `build_freq_seq` |
+| view·cart·purchase 행동 타입 (padding_idx=3) | MB-STR | `data/features.py` `build_behavior_seq` |
+| event-type 손실 가중치 (cart=25, purchase=50) | 전 모델 | `conf/train/base.yaml` `loss_weights` |
+
+---
+
+### 추가 피처 엔지니어링 검토
+
+#### ① category + brand 사이드 피처 — 기대 효과 **높음**
+
+- **근거**: PLAN.md에 `ItemEmbedding` 설계(`cat_l2` 16dim + `cat_l3` 8dim + `brand` 32dim)가 이미 존재하나 미구현. `cat_l2` 17종(의류 유형)은 아웃핏 완성 패턴(jacket→shirt→trousers→belt)을 명시적으로 학습 가능. 희소 아이템의 표현 품질도 개선됨.
+- **주의**: 아이템당 평균 283회 등장(8.35M ÷ 29,502)으로 item ID 임베딩이 카테고리 공동 출현 패턴을 이미 암묵적으로 학습함 → 한계 효과는 생각보다 작을 수 있음.
+- **구현 방향**: 아이템 임베딩에 cat/brand 임베딩을 합산 (PLAN.md §메타데이터 활용 전략 참조).
+
+```python
+# 아이템 임베딩 확장 예시 (SASRec/TiSASRec에서 item_emb 교체)
+item_repr = item_emb(item_id) + cat2_emb(cat2) + brand_emb(brand)
+```
+
+#### ② 가격대(price tier) 임베딩 — 기대 효과 **중간**
+
+- **근거**: 데이터에 `price` 컬럼 존재하나 현재 미사용. 의류 도메인에서 유저의 가격 민감도는 강한 취향 신호 (저가/중가/고가 분위수 버킷화 → item side info 주입).
+- **구현 방향**: `price`를 log-scale 또는 분위수(예: 10 buckets)로 버킷화 → `nn.Embedding(n_price_buckets, hidden_size)` → item 임베딩에 합산.
+
+```python
+# price 버킷화 예시
+price_bucket = pd.cut(df['price'], bins=10, labels=False).fillna(0).astype(int)
+```
+
+#### ③ 유저 수준 집계 통계 — 기대 효과 **낮음**
+
+- **한계**: purchase 이벤트가 0.02%로 극히 적어 유저별 카트 전환율·평균 구매 간격 등 통계가 대부분 유저에서 불안정함. 노이즈가 신호보다 클 가능성이 높음.
+- **판단**: 구현 대비 효과 불투명, 후순위.
+
+#### ④ 아이템 전역 인기도·추세 — 기대 효과 **낮음**
+
+- **한계**: TIFU-KNN이 시간 감쇠 기반 아이템 스코어로 이미 커버. 추가 중복 효과 제한적.
+
+#### ⑤ 세션 내 파생변수 — 기대 효과 **매우 낮음**
+
+- **한계**: 세션의 99.76%가 단일 이벤트 타입. 세션 단위 피처는 대부분 trivial.
+
+---
+
+### 구현 우선순위 및 권장 순서
+
+| 순위 | 피처 | 구현 복잡도 | 기대 효과 | 판단 |
+|------|------|-------------|-----------|------|
+| 1 | `cat_l2` + `brand` 아이템 사이드 임베딩 | 중 (아키텍처 수정 필요) | 중~높음 | **앙상블 튜닝 완료 후 검토** |
+| 2 | `price` 분위수 버킷 임베딩 | 낮음 | 중 | cat/brand 실험 후 추가 비교 |
+| 3 | 유저 집계 통계 / 세션 피처 | 높음 | 낮음 | 보류 |
+
+**실행 순서 권장**: S2~S4(앙상블 가중치 최적화) 완료 → 성능 정체 시 cat_l2/brand 임베딩 실험 → Val NDCG 개선 ≥ 0.002이면 Full-train 반영.
+
 | 문서 이력 | |
 |-----------|--|
 | 2026-05-20 | 초안 — Val 기준 체계적 튜닝 테이블 |
