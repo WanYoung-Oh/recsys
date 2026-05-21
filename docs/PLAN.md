@@ -235,6 +235,8 @@ class FocalLoss(nn.Module):
 | SAFERec | — | — | — | seq=50, batch=4096 | — | — |
 | MB-STR | — | — | — | seq=50, batch=4096 | — | — |
 
+**Full-train `train.epochs` (0-index `best_epoch + 1`):** SASRec **11** · TiSASRec **2** · CL4SRec **10** (early stop epoch 14 아님).
+
 **관찰**:
 - TiSASRec(0.1501) ≈ SASRec 스모크(0.1513) — 시간 정보가 미미한 추가 효과. epoch 1이 best이고 이후 loss는 계속 하락하지만 ndcg_cp는 정체 → 더 긴 patience(예: 10~20)로 재실험 여지 있음
 - CL4SRec(0.1469) < TiSASRec — seq_len=100 사용으로 epoch당 ~27min. 대조학습 loss(InfoNCE)가 1.0 수준에서 매우 느리게 개선되며 epoch 9에야 best 도달 → lmd 및 tau 튜닝 여지 있음
@@ -580,6 +582,23 @@ Full-train (최종 제출용): Nov 01 ~ Feb 29  (cv=none 시, spike 포함 전�
 leaderboard_proxy (참고): Feb 23 ~ Feb 29  (실구매 집중 구간 GT 1,105명, 튜닝 미반영)
 ```
 
+### Full-train epoch 정책 (`best_epoch`)
+
+| 단계 | early stopping | ckpt 저장 기준 |
+|------|----------------|----------------|
+| **튜닝** (`cv=single_holdout`) | ✅ `val/ndcg_cart_purchase` · `early_stopping_patience` | Val **best** → `tuning/best.pt` |
+| **Full-train** (`cv=none`) | ❌ 없음 (Val GT 없음) | **마지막 epoch** → `full/best.pt` |
+
+튜닝 run마다 **`best_epoch`를 기록**하고, Full-train 시 **`train.epochs = best_epoch + 1`** (코드 0-index)로 지정한다.
+
+- **`best_epoch`**: Val NDCG 최고 epoch — Full-train epoch **기준값**
+- **early stop epoch**: Val 정체로 학습 종료된 epoch — Full-train에 **사용하지 않음**
+- 기본 `train.epochs=20`을 무분별히 쓰면 튜닝 best(예: epoch 1)와 불일치 → 과적합·미학습 위험
+
+상세·실험 테이블: [TUNING.md §10](TUNING.md#10-s6--full-train--제출) · [OPERATION.md Phase 5](OPERATION.md#phase-5-full-train-최종-제출용-학습)
+
+```
+
 **Val GT 유저 수**:
 
 | 구간                      | purchase-only GT | cart+purchase GT | 역할                            |
@@ -715,8 +734,8 @@ def main(cfg: DictConfig) -> float:
 > # leaderboard_proxy 추가 평가 포함
 > python src/train.py model=tisasrec cv.run_leaderboard_proxy=true
 >
-> # CV 없이 전체 학습 (최종 제출 전)
-> python src/train.py model=tisasrec cv=none
+> # CV 없이 전체 학습 (최종 제출 전) — train.epochs = 튜닝 best_epoch + 1
+> python src/train.py model=tisasrec cv=none train.epochs=2 wandb.tags=[fulltrain]
 > ```
 
 ---

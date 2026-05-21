@@ -507,8 +507,31 @@ python src/train.py model=mbstr    cv=none wandb.tags=[fulltrain]
 **동작 (`cv=none`)**
 
 - Train/Val 분할 없음 → **전체 120일** 시퀀스 학습
-- Val NDCG 없음 → 마지막 epoch(또는 설정된 epoch) 체크포인트를 `outputs/<model>/runNNN_YYMMDD/full/best.pt`에 저장
+- Val NDCG 없음 → **early stopping 없음** (`early_stopping_patience` 무시, loss로도 중단하지 않음)
+- **마지막 epoch** 체크포인트를 `outputs/<model>/runNNN_YYMMDD/full/best.pt`에 저장
 - Feb 27~29 **spike 포함** (기본 `data=base`)
+
+### 5-1b. `best_epoch` 기록 및 Full-train epoch 지정
+
+Phase 2~4 튜닝 run마다 **실험 테이블에 `best_epoch`를 기록**한 뒤, Full-train `train.epochs`에 반영한다.
+
+| 구분 | 사용 여부 |
+|------|-----------|
+| 튜닝 **`best_epoch`** (Val NDCG 최고) | ✅ Full-train `train.epochs` 기준 |
+| **early stop epoch** (Val 정체로 종료) | ❌ Full-train에 사용하지 않음 |
+| 기본 `train.epochs=20` | ❌ 튜닝 best와 다르면 과적합·미학습 위험 |
+
+**확인 위치:** wandb `best_epoch` · `tuning/best.pt`의 `epoch` 키 · [TUNING.md §10](TUNING.md#10-s6--full-train--제출)
+
+코드 로그는 **0-index** (`Epoch 0`, `Epoch 1`, …) → **`train.epochs = best_epoch + 1`**
+
+```bash
+# 예: SASRec 튜닝 best_epoch=10 → Full-train 11 epoch
+python src/train.py model=sasrec cv=none train.epochs=11 wandb.tags=[fulltrain]
+
+# 예: TiSASRec 튜닝 best_epoch=1, early stop=6 → Full-train은 2 epoch (6 아님)
+python src/train.py model=tisasrec cv=none train.epochs=2 wandb.tags=[fulltrain]
+```
 
 ### 5-2. TIFU-KNN Full 예측 (전체 df)
 
@@ -524,21 +547,25 @@ python src/train_tifu.py
 bash run_tisasrec_cl4srec.sh   # Val 모드 예시 — Full-train용으로 cv=none 추가 권장
 ```
 
-Full-train 전용 예:
+Full-train 전용 예 (`train.epochs`는 모델별 튜닝 `best_epoch + 1`):
 
 ```bash
 #!/bin/bash
 set -e
 cd /data/ephemeral/home/recsys
 
-python src/train.py model=tisasrec cv=none train.epochs=300
-python src/train.py model=cl4srec  cv=none train.epochs=300
+# 튜닝 best_epoch=1 → train.epochs=2
+python src/train.py model=tisasrec cv=none train.epochs=2 wandb.tags=[fulltrain]
+# 튜닝 best_epoch=9 → train.epochs=10
+python src/train.py model=cl4srec  cv=none train.epochs=10 wandb.tags=[fulltrain]
 ```
 
 ### Phase 5 완료 체크리스트
 
+- [ ] 모델별 튜닝 **`best_epoch` 기록** (실험 테이블 · wandb)
+- [ ] Full-train **`train.epochs = best_epoch + 1`** (0-index 기준) 적용
 - [ ] 제출에 쓸 모든 모델의 `outputs/<model>/runNNN_YYMMDD/full/best.pt`가 **Full-train**으로 갱신됨
-- [ ] Val용 체크포인트를 제출에 쓰지 않았는지 확인 (경로·wandb tag `fulltrain`)
+- [ ] Val용 체크포인트(`tuning/best.pt`)를 제출에 쓰지 않았는지 확인 (경로·wandb tag `fulltrain`)
 - [ ] `exclude_spike_purchase: false` (기본) 유지
 
 ---
@@ -660,10 +687,10 @@ python src/optimize_ensemble.py
 # ③ proxy sanity (선택, 1회)
 python src/eval_proxy.py model=tisasrec
 
-# ④ Full-train (앙상블에 사용할 모든 모델)
-python src/train.py model=tisasrec cv=none
-python src/train.py model=cl4srec  cv=none
-python src/train.py model=mbstr    cv=none
+# ④ Full-train (앙상블에 사용할 모든 모델 — train.epochs = 튜닝 best_epoch + 1)
+python src/train.py model=tisasrec cv=none train.epochs=2 wandb.tags=[fulltrain]
+python src/train.py model=cl4srec  cv=none train.epochs=10 wandb.tags=[fulltrain]
+python src/train.py model=mbstr    cv=none train.epochs=<best_epoch+1> wandb.tags=[fulltrain]
 
 # ⑤ TIFU-KNN 예측 재생성 (전체 df 기준)
 python src/train_tifu.py
@@ -698,7 +725,7 @@ python src/ensemble_submit.py
 | 목적 | 명령 |
 |------|------|
 | 기본 튜닝 | `python src/train.py model=<name>` |
-| Full-train | `python src/train.py model=<name> cv=none` |
+| Full-train | `python src/train.py model=<name> cv=none train.epochs=<best_epoch+1>` |
 | Proxy (학습 직후) | `python src/train.py model=<name> cv.run_leaderboard_proxy=true` |
 | Proxy만 (ckpt) | `python src/eval_proxy.py model=<name> [ckpt_path=...]` |
 | spike 제외 | `python src/train.py data=spike_excluded` |

@@ -14,7 +14,7 @@
 
 1. **설정 선택은 Val만** — proxy·리더보드로 하이퍼파라미터를 바꾸지 않는다.
 2. **한 번에 하나(또는 한 그룹)** — 여러 값을 동시에 바꾸면 원인 분석이 어렵다.
-3. **확정 후 Full-train** — 튜닝은 `tuning/best.pt`, 제출은 `cv=none` → `full/best.pt`.
+3. **확정 후 Full-train** — 튜닝에서 **`best_epoch` 기록** → `cv=none` + **`train.epochs` 지정** → `full/best.pt`.
 
 ---
 
@@ -28,7 +28,7 @@
 | **S3** | 구조 미세 튜닝 (선택) | seq_len, dropout, CL4SRec lmd 등 | Val 개선 ≥ 0.001 또는 시간 대비 무의미면 중단 |
 | **S4** | 앙상블 가중치 | `optimize_ensemble.py` 실행 → rank.yaml 갱신 | Val 최고 조합 1개 |
 | **S5** | Proxy sanity (선택) | `eval_proxy.py` 1~2회 | 기록만, **설정 변경 없음** |
-| **S6** | Full-train + 제출 | `full/best.pt`, submission CSV | 행 수 6,382,570 검증 |
+| **S6** | Full-train + 제출 | `full/best.pt`, submission CSV | 튜닝 `best_epoch` 반영·행 수 6,382,570 검증 |
 
 ---
 
@@ -238,13 +238,47 @@ python src/eval_proxy.py model=tisasrec checkpoint.load_phase=tuning
 
 ## 10. S6 — Full-train & 제출
 
-튜닝 확정 후 **동일 run_id 계열**로 전 기간 학습.
+튜닝 확정 후 **동일 하이퍼파라미터·튜닝 `best_epoch`** 로 전 기간 학습.
+
+### 10-1. `best_epoch` 기록 (S2~S3 완료 시 필수)
+
+튜닝(Holdout CV) run마다 아래를 **실험 테이블(§11)에 기록**한다.
+
+| 항목 | 확인 위치 |
+|------|-----------|
+| `best_epoch` | wandb `best_epoch` · 콘솔 early stop 로그 · `tuning/best.pt` 내 `epoch` 키 |
+| `best val/ndcg_cart_purchase` | wandb `val/best_ndcg_cart_purchase` |
+| early stop epoch | 콘솔 `Early stopping at epoch …` (**Full-train epoch로 쓰지 않음**) |
+
+> ⚠️ **`best_epoch` ≠ early stop epoch.** early stop은 Val이 더 이상 오르지 않아 멈춘 시점이며, Full-train에는 **Val NDCG가 최고였던 epoch**를 사용한다.
+
+### 10-2. Full-train epoch 설정 (`cv=none`)
+
+`cv=none` 시 `src/train.py` 동작:
+
+- Train/Val 분할 **없음** → Val NDCG·early stopping **없음** (`early_stopping_patience` 무시)
+- `train_loss`만 로깅 → **마지막 epoch** 가중치를 `full/best.pt`에 저장
+- 기본 `train.epochs=20`을 그대로 쓰면 튜닝 best와 **불일치**할 수 있음 → **반드시 튜닝 `best_epoch` 반영**
+
+**epoch 수 변환 (코드는 0-index):**
+
+| 튜닝 로그 / ckpt | Full-train CLI |
+|------------------|----------------|
+| `best_epoch=6` (0-index, epoch 0~6까지 7 step) | `train.epochs=7` |
+| ckpt `epoch: 6` | `train.epochs=7` |
+
+확실하지 않으면 `tuning/best.pt`의 `epoch` 값을 확인한 뒤 **`train.epochs = epoch + 1`** 로 지정한다.
 
 ```bash
-python src/train.py model=tisasrec cv=none
+# 예: 튜닝 best_epoch=6 (0-index) → Full-train 7 epoch
+python src/train.py model=tisasrec cv=none train.epochs=7 \
+  wandb.tags=[fulltrain] wandb.name=tisasrec_full_ep7
+
 python src/submit.py model=tisasrec
 python src/ensemble_submit.py
 ```
+
+**선택 (시간·GPU 여유 시):** `best_epoch ± 1~2` 로 Full-train을 2~3회 돌린 뒤 `eval_proxy.py`로 sanity check (Proxy 점수로 **설정 변경하지 않음**).
 
 | 산출물 | 경로 |
 |--------|------|
@@ -257,12 +291,12 @@ python src/ensemble_submit.py
 
 wandb 또는 스프레드시트에 아래 컬럼으로 기록.
 
-| exp_id | step | model | changed_param | value | val/ndcg_cp | best_epoch | run_dir | wandb_run | notes |
-|--------|------|-------|---------------|-------|-------------|------------|---------|-----------|-------|
-| T1-01 | S1 | sasrec | cart | 10 | | | run003_260520 | | |
-| T1-02 | S1 | sasrec | cart | 25 | | | run004_260520 | | **best cart** |
-| T2-02 | S2 | tisasrec | — | defaults | | | run001_260520 | | |
-| E1 | S4 | ensemble | weights | 0.4/0.25/0.35 | | | — | | |
+| exp_id | step | model | changed_param | value | val/ndcg_cp | best_epoch | full_train_epochs | run_dir | wandb_run | notes |
+|--------|------|-------|---------------|-------|-------------|------------|-------------------|---------|-----------|-------|
+| T1-01 | S1 | sasrec | cart | 10 | | | | run003_260520 | | |
+| T1-02 | S1 | sasrec | cart | 25 | 0.1541 | 10 | **11** | run004_260520 | 9tzv2dyc | **best cart** · full=`best_epoch+1` |
+| T2-02 | S2 | tisasrec | — | defaults | 0.1501 | 1 | **2** | run001_260520 | pzjvy1b6 | early stop ep6 ≠ full epoch |
+| E1 | S4 | ensemble | weights | 0.4/0.25/0.35 | | | | — | | |
 
 **changed_param:** 실제로 바꾼 것만 적기 (`cart`, `max_seq_len`, `ensemble`, `-`).
 
@@ -305,8 +339,8 @@ python src/optimize_ensemble.py
 # S5 — proxy (튜닝 후 1회)
 python src/eval_proxy.py model=tisasrec
 
-# S6 — full-train 및 제출
-python src/train.py model=tisasrec cv=none
+# S6 — full-train 및 제출 (train.epochs = 튜닝 best_epoch + 1)
+python src/train.py model=tisasrec cv=none train.epochs=7 wandb.tags=[fulltrain]
 python src/train_tifu.py          # TIFU-KNN 예측 재생성
 python src/ensemble_submit.py     # cart boost 자동 포함
 ```
@@ -322,4 +356,5 @@ python src/ensemble_submit.py     # cart boost 자동 포함
 | 문서 이력 | |
 |-----------|--|
 | 2026-05-20 | 초안 — Val 기준 체계적 튜닝 테이블 |
+| 2026-05-21 | S6 Full-train `best_epoch` 기록·`train.epochs` 반영 가이드 추가 |
 | 2026-05-21 | 체크포인트 경로 형식 반영 (runNNN_YYMMDD/tuning|full), 전체 구현 완료 기준 정리 |
