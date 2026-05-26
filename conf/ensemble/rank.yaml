@@ -1,19 +1,12 @@
 weights:
-  sasrec:   1.00
-  tisasrec: 0.35
-  cl4srec:  0.20
-  fearec:   0.30
-  bsarec:   0.25
-  saferec:  0.20
-  mbstr:    0.40
-  tifu_knn: 0.15
+  tisasrec: 0.1364
+  bsarec: 0.0948
+  mbstr: 0.1542
+  tifu_knn: 0.6461
 top_k: 10
-# null → 모델별 최신 runNNN_YYMMDD/full/best.pt
 run_id: null
-checkpoint_phase: full
-# cart boost 후처리: carted-but-not-purchased 아이템 상위 배치
+checkpoint_phase: tuning
 cart_boost: true
-# TIFU-KNN 하이퍼파라미터
 tifu_group_count: 7
 tifu_decay_within: 0.9
 tifu_decay_across: 0.7

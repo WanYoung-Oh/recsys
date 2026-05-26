@@ -166,9 +166,11 @@ def main():
         elif model_name == "mbstr":
             extra_kwargs["behavior_sequences"] = build_behavior_seq(m_seqs, model_seq_len)
 
+        # TiSASRec: [B, L, L, hd] 시간 행렬 2개 → 배치당 메모리가 일반 모델의 L배
+        bs = 512 if model_name == "tisasrec" else cfg.train.eval_batch_size
         preds = generate_predictions(
             model, all_user_ids, m_val_seqs, idx2item, device,
-            batch_size=cfg.train.eval_batch_size,
+            batch_size=bs,
             amp_dtype=amp_dtype,
             **extra_kwargs,
         )

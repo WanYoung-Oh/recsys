@@ -4,6 +4,9 @@
 val NDCG@10 (cart+purchase) 기준 최적 가중치를 탐색하고
 conf/ensemble/rank.yaml을 업데이트한다.
 
+체크포인트는 conf/ensemble/rank.yaml의 run_id·checkpoint_phase
+(tuning | full)를 ensemble_submit.py와 동일하게 따른다.
+
 실행:
   python src/optimize_ensemble.py
   python src/optimize_ensemble.py n_trials=500 seed=0
@@ -27,7 +30,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 def _load_val_preds(model_name: str, val_seqs, val_user_ids, gt_cp,
                     idx2item, device, amp_dtype, cfg_base, df=None,
-                    item2idx=None) -> dict | None:
+                    item2idx=None, run_id=None, checkpoint_phase: str = "full") -> dict | None:
     """체크포인트 로드 → val 예측 dict 반환. 체크포인트 없으면 None."""
     from util.paths import get_checkpoint_path
     from models import build_model
@@ -42,15 +45,18 @@ def _load_val_preds(model_name: str, val_seqs, val_user_ids, gt_cp,
         data_cfg.data_dir = str(ROOT / data_cfg.data_dir)
         return OmegaConf.create({
             "model": model_cfg, "data": data_cfg, "train": train_cfg,
-            "cv": {"enabled": False}, "run_id": None, "run_date": None,
-            "ckpt_path": None, "checkpoint": {"load_phase": "full"},
+            "cv": {"enabled": False}, "run_id": run_id, "run_date": None,
+            "ckpt_path": None, "checkpoint": {"load_phase": checkpoint_phase},
         })
 
     m_cfg    = load_cfg(model_name)
-    ckpt_p   = get_checkpoint_path(m_cfg, str(ROOT), for_training=False)
+    ckpt_p   = get_checkpoint_path(
+        m_cfg, str(ROOT), for_training=False, load_phase=checkpoint_phase,
+    )
     if not ckpt_p.exists():
-        print(f"  ⚠ {model_name} 체크포인트 없음 — 스킵")
+        print(f"  ⚠ {model_name} 체크포인트 없음 ({ckpt_p}) — 스킵")
         return None
+    print(f"  {model_name}: {ckpt_p}")
 
     model = build_model(m_cfg.model, cfg_base["n_items"]).to(device)
     ckpt  = torch.load(ckpt_p, map_location=device)
@@ -72,9 +78,11 @@ def _load_val_preds(model_name: str, val_seqs, val_user_ids, gt_cp,
         extra["behavior_sequences"] = build_behavior_seq(m_seqs, seq_len)
 
     from inference import generate_predictions
+    # TiSASRec: [B, L, L, hd] 시간 행렬 2개 → 배치당 메모리가 일반 모델의 L배
+    bs = 512 if model_name == "tisasrec" else cfg_base["eval_batch_size"]
     preds = generate_predictions(
         model, val_user_ids.tolist(), m_val_seqs, idx2item, device,
-        batch_size=cfg_base["eval_batch_size"],
+        batch_size=bs,
         amp_dtype=amp_dtype,
         **extra,
     )
@@ -83,9 +91,13 @@ def _load_val_preds(model_name: str, val_seqs, val_user_ids, gt_cp,
     return preds
 
 
-def _tifu_val_preds(seqs, val_user_ids, idx2item) -> dict:
+def _tifu_val_preds(seqs, val_user_ids, idx2item, ensemble_cfg) -> dict:
     from models.tifu_knn import TIFUKNN
-    tifu = TIFUKNN()
+    tifu = TIFUKNN(
+        group_count=ensemble_cfg.get("tifu_group_count", 7),
+        decay_within=ensemble_cfg.get("tifu_decay_within", 0.9),
+        decay_across=ensemble_cfg.get("tifu_decay_across", 0.7),
+    )
     tifu.fit(seqs, idx2item)
     return tifu.predict_all(val_user_ids.tolist())
 
@@ -117,12 +129,16 @@ def main(cfg: DictConfig):
     n_items = len(item2idx)
 
     train_df, val_df = make_holdout(df)
-    gt_cp        = build_gt(val_df, mode="cart_purchase")
-    val_user_ids = np.array(list(val_df["user_id"].unique()))
+    gt_cp = build_gt(val_df, mode="cart_purchase")
     print(f"  GT 유저 수: {len(gt_cp):,}")
 
     base_seq = build_sequences(train_df, item2idx, cfg.model.max_seq_len)
     val_seqs = build_val_sequences(base_seq, cfg.model.max_seq_len)
+
+    # val_df에만 등장하고 train_df 이력이 없는 cold-start 유저 제외
+    _val_all = val_df["user_id"].unique()
+    val_user_ids = np.array([uid for uid in _val_all if uid in base_seq])
+    print(f"  예측 대상 유저 수: {len(val_user_ids):,} / {len(_val_all):,} (cold-start 제외)")
 
     cfg_base = {
         "n_items":        n_items,
@@ -131,17 +147,26 @@ def main(cfg: DictConfig):
 
     ensemble_cfg = OmegaConf.load(ROOT / "conf" / "ensemble" / "rank.yaml")
     candidate_models = [m for m in ensemble_cfg.weights if m != "tifu_knn"]
+    run_id = ensemble_cfg.get("run_id")
+    checkpoint_phase = ensemble_cfg.get("checkpoint_phase", "full")
+    print(
+        f"▶ 체크포인트 설정: run_id={run_id or '최신'}, "
+        f"checkpoint_phase={checkpoint_phase}"
+    )
 
     print("▶ 모델별 val 예측 수집 중...")
     all_preds: dict[str, dict] = {}
     for mn in candidate_models:
         p = _load_val_preds(mn, val_seqs, val_user_ids, gt_cp,
                             idx2item, device, amp_dtype, cfg_base,
-                            df=train_df, item2idx=item2idx)
+                            df=train_df, item2idx=item2idx,
+                            run_id=run_id, checkpoint_phase=checkpoint_phase)
         if p is not None:
             all_preds[mn] = p
 
-    all_preds["tifu_knn"] = _tifu_val_preds(base_seq, val_user_ids, idx2item)
+    all_preds["tifu_knn"] = _tifu_val_preds(
+        base_seq, val_user_ids, idx2item, ensemble_cfg,
+    )
 
     if not all_preds:
         raise RuntimeError("예측 가능한 모델이 없습니다.")
