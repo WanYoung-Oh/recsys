@@ -231,16 +231,18 @@ class FocalLoss(nn.Module):
 | TiSASRec | **0.1501** | 1 | 6 (patience=5) | seq=50, batch=1024, ~1119s/ep | `pzjvy1b6` | `outputs/tisasrec/run001_260520/tuning/best.pt` |
 | CL4SRec | **0.1469** | 9 | 14 (patience=5) | seq=100, batch=2048, ~1617s/ep | `qdtlewun` | `outputs/cl4srec/run001_260520/tuning/best.pt` |
 | FEARec | — | — | — | seq=50, batch=2048 | — | — |
-| BSARec | — | — | — | seq=50, batch=4096 | — | — |
+| BSARec | **0.1450** | 1 | 6 (patience=5) | seq=50, batch=4096 | — | `outputs/bsarec/run001_260526/tuning/best.pt` |
 | SAFERec | — | — | — | seq=50, batch=4096 | — | — |
-| MB-STR | — | — | — | seq=50, batch=4096 | — | — |
+| MB-STR | **0.1527** | 3 | 8 (patience=5) | seq=50, batch=4096 | — | `outputs/mbstr/run001_260526/tuning/best.pt` |
 
-**Full-train `train.epochs` (0-index `best_epoch + 1`):** SASRec **11** · TiSASRec **2** · CL4SRec **10** (early stop epoch 14 아님).
+**Full-train `train.epochs` (0-index `best_epoch + 1`):** SASRec **11** · TiSASRec **2** · CL4SRec **10** · BSARec **2** · MB-STR **4** (early stop epoch 아님).
 
 **관찰**:
 - TiSASRec(0.1501) ≈ SASRec 스모크(0.1513) — 시간 정보가 미미한 추가 효과. epoch 1이 best이고 이후 loss는 계속 하락하지만 ndcg_cp는 정체 → 더 긴 patience(예: 10~20)로 재실험 여지 있음
 - CL4SRec(0.1469) < TiSASRec — seq_len=100 사용으로 epoch당 ~27min. 대조학습 loss(InfoNCE)가 1.0 수준에서 매우 느리게 개선되며 epoch 9에야 best 도달 → lmd 및 tau 튜닝 여지 있음
-- 세 모델 모두 0.14~0.15 대 — 앙상블 효과 확인이 다음 단계
+- BSARec(0.1450) — SASRec·TiSASRec 대비 소폭 낮음. epoch 1 best·early stop 6 → Full-train **2** epoch
+- MB-STR(0.1527) — 5모델 중 **최고**. cart/purchase 행동 임베딩이 cart+purchase GT와 정합. epoch 3 best·early stop 8 → Full-train **4** epoch
+- 딥 모델 Val 0.145~0.154 대 — 앙상블·MB-STR 중심 조합이 다음 단계
 
 ### 주요 버그 수정 이력
 
@@ -1122,6 +1124,84 @@ top_k: 10
 | TiSASRec + BSARec + CL4SRec              | **희소성+시간+주파수 핵심 조합**                           |
 | (TiSASRec + BSARec + CL4SRec) + TIFU-KNN | 딥러닝 + cart 가중 반복 패턴 혼합                          |
 | **MB-STR + TiSASRec + CL4SRec**          | **cart→purchase 직접 모델링 + 시간 인지 — 권장 최종 조합** |
+| **TiSASRec + BSARec + MB-STR + TIFU-KNN** | MB-STR 중심 4모델 + TIFU 보조 — `conf/ensemble/rank.yaml` 앙상블 **실측** |
+
+**실측 제출 (Public LB)**
+
+| 항목 | 내용 |
+| ---- | ---- |
+| 조합 | TiSASRec + BSARec + MB-STR + TIFU-KNN |
+| 설정 | [`conf/ensemble/rank.yaml`](../conf/ensemble/rank.yaml) (`optimize_ensemble.py` Val 가중치, `cart_boost: true`) |
+| 가중치 (optimize 후) | tisasrec **0.1364** · bsarec **0.0948** · mbstr **0.1542** · tifu_knn **0.6461** |
+| 제출 | `ensemble_submit.py` |
+| **Public LB NDCG@10** | **0.1441** |
+
+> Val holdout 앙상블 NDCG@10(~0.35) 대비 LB **0.1441** — holdout Val·Proxy·Public LB 구간 차이 및 TIFU 고비중(~65%) 영향 검토 필요. Full-train ckpt·가중치 재탐색 후보.
+
+##### 조합별 도메인·EDA 해설
+
+본 경진대회의 **실질 문제**는 “유저가 **다음 1주**에 **무엇을 살지**”를 맞추는 것이며, EDA상 정답에 가장 가까운 신호는 **cart→purchase**(cart 전환 ~3.8%, view 전환 ~0.008% — **475배 차**)입니다. 동시에 **희소성 99.96%**·**5건 이하 유저 47.5%**·**시간 간격 CV=4.12**·**Feb 27~29 purchase spike(전체 구매의 69.3%)**가 모델·조합 선택을 갈라놓는 축입니다. 아래는 각 조합이 **어떤 EDA 신호를 상호 보완**하려는지에 대한 해석입니다.
+
+| EDA 축 | 수치·현상 | 주로 담당하는 모델 |
+| ------ | --------- | ------------------ |
+| cart→purchase 전환 | cart 0.20%, view 대비 475배 전환 | **MB-STR**, cart loss weight, **cart boost** |
+| 시간 불규칙성 | 간격 CV **4.12**, Nov~Feb 계절(outerwear) | **TiSASRec** |
+| 극희소·짧은 시퀀스 | 희소 99.96%, ≤5건 유저 **47.5%** | **CL4SRec** (대조 증강) |
+| 주파수·롱테일 편향 | 상위 1% 아이템 25.1% 커버 | **BSARec** |
+| view 반복·최근성 | 반복 이벤트 **14.63%**(view 기준) | **TIFU-KNN**, (SAFERec) |
+| 시계열 주기성 | 의류 계절·재방문 패턴 | **FEARec** |
+
+**1. TiSASRec + FEARec**
+
+- **도메인 정합**: 의류(apparel) 단일 도메인에서 **겨울→초봄(11월~2월)** 수요 이동(jacket·glove·scarf)과 **재방문·브랜드 충성** 패턴이 공존. TiSASRec은 **이벤트 간격 CV=4.12**를 반영하고, FEARec(FFT)은 **반복 view의 주기·저주파 트렌드**를 포착.
+- **한계**: 둘 다 **view/cart/purchase를 명시 분리하지 않음** — cart 신호는 loss weight(cart=25)에 의존. Val 단독 실측에서 TiSASRec(0.1501) ≈ SASRec 수준이라, FEARec 추가 시 **주기성 보완**은 기대되나 **cart→purchase 직접 모델링**은 약함.
+- **적합 시나리오**: 시간+주기 **2축 베이스라인** 탐색, MB-STR·cart boost 도입 전 비교용.
+
+**2. TiSASRec + BSARec + CL4SRec — “EDA 3축” 핵심 조합 (PLAN 초기안)**
+
+- **TiSASRec**: “언제” — 세션·유저 타임라인의 **불규칙한 간격**(CV=4.12)과 계절성.
+- **BSARec**: “어떤 아이템이 인기인가” — **롱테일 99.96%** 환경에서 attention의 **저주파(인기) 편향**을 FFT로 완화, 인기·비인기 아이템 균형.
+- **CL4SRec**: “데이터가 너무 적은 유저” — **47.5%**가 5건 이하·시퀀스 중앙값 **6** → 대조학습으로 **희소 유저 일반화**.
+- **도메인 의미**: view 99.78% 퍼널에서 **interest(시간·패턴) + 희소성**을 동시에 커버. cart→purchase는 **loss weight**로 간접 반영.
+- **Val 실측**: CL4SRec 0.1469, TiSASRec 0.1501 — 세 모델 모두 **0.14~0.15** 밴드. 상호 **오류 상관이 낮을 때** 앙상블 이득이 큼.
+
+**3. (TiSASRec + BSARec + CL4SRec) + TIFU-KNN — 딥러닝 + 규칙 기반 보조**
+
+- **추가 신호**: TIFU-KNN은 **최근 50개 view/cart/purchase ID**(행동 타입 미구분)에 **시간 감쇠**를 적용 — EDA **view 반복 14.63%**·“최근 본 것 ≈ 관심” 가설과 정합.
+- **Val에서 유리한 이유**: Holdout Val(Feb 09~22) GT가 **cart+purchase**이고, 평시에는 **사전 view/cart → 구매** 패턴이 상대적으로 유지됨 → optimize 시 TIFU 비중이 **0.15 → ~0.65**까지 치솟을 수 있음.
+- **Proxy·LB에서의 리스크**: Feb 27~29 spike는 **view 없이 purchase(1.6%)**·**cart 전환 2.5%**(평시 3.8%↓) 등 **view·감쇠와 어긋난** 구간 — TIFU 고비중은 [Val↑ LB↓](#실측-제출-public-lb) 패턴을 만들 수 있음.
+
+**4. MB-STR + TiSASRec + CL4SRec — cart→purchase 직접 모델링 (Proxy·LB 지향)**
+
+- **MB-STR 교체 의미**: CL4SRec·BSARec 대신(또는 병행) **view/cart/purchase 행동 타입 임베딩**을 시퀀스에 주입 — EDA **핵심 가설(cart→purchase)** 과 **평가 GT(cart+purchase)** 에 **구조적으로 가장 정합**.
+- **Val 실측**: MB-STR **0.1527**(5모델 중 최고) — cart/purchase를 명시한 설계가 Holdout Val에서 검증됨.
+- **TiSASRec·CL4SRec 역할**: MB-STR이 행동 타입을 담당하는 동안, **시간(CV=4.12)** 과 **희소 유저(47.5%)** 는 기존 3축에서 보완.
+- **Proxy 적합**: spike 구간에서 cart funnel이 약해져도, **행동 타입 + 시간 + 희소성** 조합이 **프로모션성 구매**와 **평시 funnel**을 동시에 커버하기 쉬움 — PLAN상 **최종 제출 후보 1순위** 조합.
+
+**5. TiSASRec + BSARec + MB-STR + TIFU-KNN — 실측 제출 조합 (Public LB 0.1441)**
+
+| 모델 | 담당 EDA 신호 | Val 단독 NDCG@10(cp) | 실측 앙상블 가중치 |
+| ---- | ------------- | -------------------- | ------------------ |
+| **MB-STR** | cart/purchase 행동 분리, GT 정합 | **0.1527** | 0.154 (정규화 ~15%) |
+| **TiSASRec** | 시간 간격 CV=4.12 | 0.1501 | 0.136 (~13%) |
+| **BSARec** | 롱테일·주파수 편향 | 0.1450 | 0.095 (~9%) |
+| **TIFU-KNN** | view 반복·최근성 | — (비신경망) | **0.646 (~63%)** |
+
+- **조합 의도**: CL4SRec(희소 증강) 대신 **Val 최고 MB-STR**을 넣고, BSARec으로 **주파수 축**을 유지, TIFU로 **최근 view 패턴** 보완 — “**cart 직접 모델링 + 시간 + 주파수 + 최근성**” 4신호.
+- **cart boost와의 관계**: 제출 파이프라인에서 **carted-but-not-purchased**를 Top-K 앞으로 올림 — EDA cart→purchase 가설의 **규칙 기반 레이어**. TIFU(최근 view)와 **부분 중복** 가능 → TIFU·boost 동시 고비중 시 **신호 중복·Val 과적합** 주의.
+- **LB 0.1441 해석**:
+  - **Val(~0.35) vs LB(0.1441) 격차**: (①) Val은 Feb 09~22·**cart+purchase GT 1,065명**, LB는 **다른 1주·purchase 중심** 가능 (②) 제출 시 **tuning ckpt**·TIFU **~65%**는 Val holdout에 맞춘 조합 (③) spike 구간(**69.3% purchase**)에서는 **view·감쇠(TIFU) 신호 약화**, **MB-STR·cart boost**가 더 중요할 수 있음.
+  - **시사점**: 조합 자체(MB-STR 포함)는 도메인과 정합하나, **가중치 optimize 결과(TIFU 과대)** 와 **ckpt phase(tuning)** 가 LB를 끌어내렸을 가능성 — **Full-train ckpt + TIFU 상한(예: 0.15~0.25) + CL4SRec 또는 MB-STR 중심 재조합**이 다음 실험 축.
+
+**조합 선택 요약 (EDA → 실행)**
+
+| 목표 | 권장 조합 | 이유 |
+| ---- | --------- | ---- |
+| Val Holdout 튜닝 | TiSASRec + BSARec + CL4SRec (+ TIFU 소량) | 시간·희소·주파수 3축 균형 |
+| cart→purchase·Proxy·LB | **MB-STR + TiSASRec** (+ CL4SRec 또는 BSARec) | 행동 타입 GT 정합, spike 대응 |
+| 이미 제출한 4모델 베이스 개선 | 동일 4모델, **TIFU↓·MB-STR↑**, **full ckpt** | LB 0.1441 대비 Val 과적합 완화 |
+
+> 모든 조합은 `ensemble_submit.py`의 **cart boost**(`rank.yaml`: `cart_boost: true`)를 공통 후처리로 얹을 수 있음 — 랭크 가중치와 별개로 **cart→purchase 가설**을 제출 직전에 한 번 더 반영하는 레이어.
 
 ### Phase 6: 추론·제출 파이프라인 (가이드: 약 1일)
 
@@ -1375,9 +1455,12 @@ Val에서 1등인 조합이 Proxy·리더보드에서도 1등이라는 보장은
 
 ### PLAN 조합별 권장
 
+> 조합별 EDA·도메인 해석은 [조합별 도메인·EDA 해설](#조합별-도메인eda-해설) 참고.
+
 | 조합                                                                        | Val 튜닝                                                           | Proxy·LB 감                |
 | --------------------------------------------------------------------------- | ------------------------------------------------------------------ | -------------------------- |
-| **TiSASRec + BSARec + CL4SRec + TIFU-KNN** (현재 `conf/ensemble/rank.yaml`) | ★★★ 출발점 — cart+purchase GT·cart 가중 TIFU·희소성·시간·패턴 균형 | ★★☆                        |
+| **TiSASRec + BSARec + CL4SRec + TIFU-KNN** (초기 PLAN 가중치)               | ★★★ 출발점 — cart+purchase GT·cart 가중 TIFU·희소성·시간·패턴 균형 | ★★☆                        |
+| **TiSASRec + BSARec + MB-STR + TIFU-KNN** (`conf/ensemble/rank.yaml` 제출) | ★★★ Val optimize NDCG ~0.35                                        | **Public LB 0.1441** (실측) |
 | **MB-STR + TiSASRec + CL4SRec** (+ BSARec 선택)                             | ★★★ cart→purchase 직접 모델링                                      | ★★★ Proxy에 더 가깝게 보강 |
 | **(위 4모델) + cart 부스트**                                                | ★★★                                                                | ★★★                        |
 
