@@ -78,7 +78,7 @@ flowchart TB
   subgraph dataIn ["1. 데이터"]
     parquet[("train.parquet<br/>view · cart · purchase")]
     load["load_data · build_vocab<br/>src/data/dataset.py"]
-    seq["build_sequences<br/>event 가중 loss"]
+    seq["build_sequences · features<br/>time / behavior / freq 보조 시퀀스"]
     parquet --> load --> seq
   end
 
@@ -94,10 +94,10 @@ flowchart TB
     cvMode -->|none| fullTrain
   end
 
-  subgraph trainLoop ["3. 학습 · python src/train.py"]
-    models["SASRec · TiSASRec · CL4SRec<br/>FEARec · BSARec · SAFERec · MB-STR · TIFU-KNN"]
+  subgraph trainLoop ["3. 학습 · src/train.py"]
+    models["TiSASRec · BSARec · MB-STR<br/>CL4SRec · SAFERec · SASRec · TIFU-KNN"]
     wandb["wandb<br/>val/ndcg_cart_purchase"]
-    ckpt["outputs/모델/runNNN_YYMMDD/tuning|full/best.pt"]
+    ckpt["outputs/모델/runNNN/{tuning|full}/best.pt<br/>optimize_ensemble.py → rank.yaml"]
     seq --> trainHold
     seq --> fullTrain
     trainHold --> models
@@ -108,15 +108,21 @@ flowchart TB
   end
 
   subgraph deploy ["4. 추론 · 제출"]
-    infer["full_sort_predict<br/>src/inference.py"]
-    ens["rank_ensemble<br/>ensemble_submit.py"]
-    sub["submission CSV<br/>638,257유저 × Top10"]
-    valid["validate_submission"]
+    infer["full_sort_predict · src/inference.py<br/>TiSASRec·MB-STR 보조시퀀스 자동 적용"]
+    ens["rank_ensemble + _cart_boost<br/>ensemble_submit.py"]
+    lgbm["LGBMRanker LambdaMART<br/>train_reranker_lgbm.py"]
+    abl["피처 그룹 ablation<br/>run_reranker_family_drop.py"]
+    subA["submission_ensemble_*.csv<br/>경로 A — RRF 앙상블"]
+    subB["submission_reranker_lgbm.csv<br/>경로 B — LightGBM 리랭커"]
+    valid["validate_submission<br/>638,257유저 × 10행"]
+    lb[("대회 제출")]
     ckpt --> infer
-    infer --> ens
-    ens --> sub
-    sub --> valid
-    valid --> lb[("대회 제출")]
+    infer --> ens --> subA
+    infer --> lgbm --> subB
+    lgbm -.->|DROP_FAMILY| abl
+    subA --> valid
+    subB --> valid
+    valid --> lb
   end
 
   dataIn --> cvSplit
@@ -133,6 +139,8 @@ flowchart TB
 | TIFU-KNN 예측 생성 | `python src/train_tifu.py` |
 | 앙상블 가중치 최적화 | `python src/optimize_ensemble.py` |
 | 앙상블 제출 | `python src/ensemble_submit.py` |
+| **LightGBM 리랭커 학습·제출** | `python src/train_reranker_lgbm.py` |
+| 리랭커 피처 ablation | `DROP_FAMILY=tifu_rank python src/run_reranker_family_drop.py` |
 
 ---
 
@@ -152,6 +160,8 @@ recsys/
 ├── src/
 │   ├── train.py              # 학습 + Val 평가 (+ proxy 선택)
 │   ├── train_tifu.py         # TIFU-KNN 예측 생성 → outputs/tifu_knn/preds.pkl
+│   ├── train_reranker_lgbm.py  # LightGBM LambdaMART 리랭커 학습 → submission_reranker_lgbm.csv
+│   ├── run_reranker_family_drop.py  # 피처 그룹 ablation (DROP_FAMILY 환경변수 제어)
 │   ├── optimize_ensemble.py  # 랜덤 서치로 앙상블 가중치 최적화
 │   ├── eval_proxy.py         # ckpt만 로드 → proxy NDCG (재학습 없음)
 │   ├── util/
@@ -302,6 +312,25 @@ python src/ensemble_submit.py
 각 모델의 `outputs/<모델명>/runNNN_YYMMDD/full/best.pt`가 있어야 합니다.  
 `cart_boost: true` (기본)로 carted-but-not-purchased 아이템을 예측 상위로 이동합니다.
 
+**LightGBM LambdaMART 리랭커** (앙상블 후 선택적 적용)
+
+각 모델의 Top-10 후보를 피처(랭크, RR, 인기도, 유저 활동, 행동 이력)로 조합해 LightGBM LambdaMART로 리랭킹합니다.
+
+```bash
+# 리랭커 학습 + 제출 CSV 생성 (tuning/full ckpt 자동 사용)
+python src/train_reranker_lgbm.py
+# → outputs/submission_reranker_lgbm.csv
+# → outputs/reranker_feature_importance.csv
+
+# 피처 그룹 ablation (popularity / tifu_rank / user_activity 중 선택)
+DROP_FAMILY=tifu_rank python src/run_reranker_family_drop.py
+DROP_FAMILY=popularity python src/run_reranker_family_drop.py
+DROP_FAMILY=user_activity python src/run_reranker_family_drop.py
+# → outputs/ablation_reranker/drop_manifest_<family>.json
+```
+
+사용 모델: TiSASRec + BSARec + MB-STR + TIFU-KNN (Full-train ckpt 기준)
+
 ### 배치 스크립트 예시
 
 ```bash
@@ -354,6 +383,9 @@ python src/train.py model=cl4srec train.epochs=20 train.early_stopping_patience=
 | `outputs/tifu_knn/preds.pkl`        | TIFU-KNN 예측 캐시 (`train_tifu.py`)   |
 | `outputs/submission_<model>.csv`    | 단일 모델 제출 파일                    |
 | `outputs/submission_ensemble_*.csv` | 앙상블 제출 파일 (cart boost 포함)     |
+| `outputs/submission_reranker_lgbm.csv` | LightGBM 리랭커 제출 파일 |
+| `outputs/reranker_feature_importance.csv` | 리랭커 피처 중요도 |
+| `outputs/ablation_reranker/drop_manifest_<family>.json` | 피처 그룹 ablation 결과 |
 | `outputs/YYYY-MM-DD/HH-MM-SS/.hydra/` | 해당 실행의 전체 설정 스냅샷        |
 
 제출 CSV는 **638,257 유저 × 10행 = 6,382,570행** 롱 포맷이며, `validate_submission`으로 형식을 검증합니다.

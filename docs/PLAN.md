@@ -2,7 +2,7 @@
 
 | 항목      | 내용                                                                                                                                                                                        |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 최종 수정 | 2026-05-21                                                                                                                                                                                  |
+| 최종 수정 | 2026-05-26                                                                                                                                                                                  |
 | 하드웨어  | RTX 3090 24GB VRAM                                                                                                                                                                          |
 | 개요      | 이커머스 로그(세션·시간순) 위에서 **미래 1주 구매 상품**을 **NDCG@10(이진 relevance)** 로 평가하는 경진대회. EDA 실측값·1-Fold Holdout CV·Hydra+wandb 파이프라인을 반영한 실행 가능한 플랜. |
 
@@ -183,7 +183,7 @@ class FocalLoss(nn.Module):
 
 ---
 
-## 구현 현황 (2026-05-20 기준)
+## 구현 현황 (2026-05-27 기준)
 
 ### 완료된 파일
 
@@ -222,6 +222,8 @@ class FocalLoss(nn.Module):
 | `src/inference.py`              | ✅   | `generate_predictions` (time/freq/behavior 보조 시퀀스 지원), `generate_submission_long`, `validate_submission` (n_users 필수 인자) |
 | `src/ensemble_submit.py`        | ✅   | 랭크 앙상블 + `_cart_boost()` 후처리 → submission CSV (active_models를 rank.yaml에서 동적 파생) |
 | `src/submit.py`                 | ✅   | 단일 모델 체크포인트 로드 → submission CSV (tisasrec·saferec·mbstr 보조 시퀀스 자동 선택) |
+| `src/train_reranker_lgbm.py`    | ✅   | LightGBM LambdaMART 리랭커: tuning 예측 → 메타 데이터셋 빌드 → 학습 → full 예측 리랭킹 → `submission_reranker_lgbm.csv` |
+| `src/run_reranker_family_drop.py` | ✅ | 피처 그룹 ablation 래퍼: `DROP_FAMILY` 환경변수로 popularity / tifu_rank / user_activity 피처 패치 후 리랭커 재실행 |
 
 ### Val NDCG@10 실험 결과 (cart+purchase GT = 1,065명)
 
@@ -258,6 +260,8 @@ class FocalLoss(nn.Module):
 | TIFU-KNN `predict()` top_k 미보장 | 상위 `top_k`개 슬라이스 후 `idx2item` 필터 → 필터 결과가 top_k보다 적을 수 있음 | 전체 정렬 후 필터, 마지막에 `[:top_k]` 적용 |
 | `ensemble_submit.py` active_models 하드코딩 | `["sasrec", "tisasrec", "cl4srec"]` 고정 → rank.yaml 가중치 변경 미반영, 신규 모델 자동 제외 | `list(ensemble_cfg.weights.keys())`로 동적 파생 |
 | `optimize_ensemble.py` torch seed 누락 | `random.seed`·`np.random.seed`만 설정, PyTorch 난수 상태 비고정 → 재현성 불완전 | `torch.manual_seed(seed)` / `torch.cuda.manual_seed_all(seed)` 추가 |
+| `optimize_ensemble.py` cold-start 유저 KeyError | `val_user_ids`를 `val_df` 기준으로 뽑은 뒤 `m_val_seqs`(train_df 기준)에서 조회 → val 기간에 처음 등장한 신규 유저 KeyError | `base_seq` 빌드 이후 `[uid for uid in val_df["user_id"].unique() if uid in base_seq]` 로 필터링, 출력 메시지에 cold-start 제외 수 표기 |
+| TiSASRec 추론 CUDA OOM (`optimize_ensemble.py`, `ensemble_submit.py`) | `eval_batch_size=32768`에서 `[B,L,L,hd]` 시간 행렬 2개(T_k·T_q) × 3레이어 → ~19.5 GB 요구 | TiSASRec에만 `batch_size=512` 고정 분기 추가 (`bs = 512 if model_name == "tisasrec" else cfg.eval_batch_size`) |
 
 ### 실행 명령어
 
@@ -279,6 +283,14 @@ python src/optimize_ensemble.py
 
 # 앙상블 제출 (cart boost 포함)
 python src/ensemble_submit.py
+
+# LightGBM LambdaMART 리랭커 학습 + 제출
+python src/train_reranker_lgbm.py
+
+# 피처 그룹 ablation (DROP_FAMILY: popularity / tifu_rank / user_activity)
+DROP_FAMILY=tifu_rank     python src/run_reranker_family_drop.py
+DROP_FAMILY=popularity    python src/run_reranker_family_drop.py
+DROP_FAMILY=user_activity python src/run_reranker_family_drop.py
 ```
 
 ---
@@ -353,38 +365,50 @@ flowchart TB
 
   subgraph data ["1. 데이터"]
     raw[("행동 로그<br/>view · cart · purchase")]
-    feat["시퀀스·피처 변환<br/>이벤트별 학습 가중"]
+    feat["시퀀스·피처 변환<br/>time · behavior · freq 보조 시퀀스<br/>이벤트별 학습 가중 (cart=25 · purchase=50)"]
     raw --> feat
   end
 
   subgraph cv ["2. 검증·튜닝"]
-    val["Val 구간<br/>설정·모델 선택"]
-    ref["Proxy 구간<br/>참고만"]
-    prod["Full-train<br/>최종 제출용 학습"]
+    val["Val 구간 02/09~02/22<br/>cart+purchase GT ~1,065명<br/>설정·모델 선택"]
+    ref["Proxy 구간 02/23~02/29<br/>참고만 · 튜닝 ❌"]
+    prod["Full-train 11/01~02/29<br/>cv=none · spike 포함"]
     val -.-> ref
     val --> prod
   end
 
   subgraph train ["3. 모델"]
-    pool["시퀀스 추천 모델군<br/>시간 · 희소 · 행동 · 주파수 등"]
-    best["Best 체크포인트<br/>Val NDCG 기준"]
+    pool["TiSASRec · BSARec · MB-STR<br/>CL4SRec · SAFERec · TIFU-KNN"]
+    best["Best 체크포인트<br/>tuning/best.pt · full/best.pt"]
+    optw["optimize_ensemble.py<br/>→ rank.yaml 가중치 자동 갱신"]
     feat --> pool
     val --> pool
     prod --> pool
     pool --> best
+    best --> optw
   end
 
   subgraph out ["4. 제출"]
-    ens["랭크 앙상블"]
-    post["Cart 부스트 후처리"]
-    sub["제출 CSV 검증"]
-    best --> ens --> post --> sub
+    ens["랭크 앙상블<br/>ensemble_submit.py"]
+    post["Cart 부스트 후처리<br/>_cart_boost()"]
+    lgbm["LightGBM 리랭커<br/>train_reranker_lgbm.py"]
+    abl["피처 ablation<br/>run_reranker_family_drop.py"]
+    subA["submission_ensemble_*.csv<br/>경로 A — RRF 앙상블"]
+    subB["submission_reranker_lgbm.csv<br/>경로 B — LightGBM 리랭커"]
+    valid["제출 CSV 검증<br/>validate_submission"]
+    optw --> ens
+    best --> lgbm
+    ens --> post --> subA
+    lgbm --> subB
+    lgbm -.->|DROP_FAMILY| abl
+    subA --> valid
+    subB --> valid
   end
 
   goal --> data --> cv --> train --> out
 ```
 
-> **실행 진입점**: `python src/train.py model=<name>` (딥 모델 튜닝·Full-train) · `python src/train_tifu.py` (TIFU-KNN 예측) · `python src/optimize_ensemble.py` (가중치 최적화) · `python src/ensemble_submit.py` (앙상블+cart boost 제출)
+> **실행 진입점**: `python src/train.py model=<name>` (딥 모델 튜닝·Full-train) · `python src/train_tifu.py` (TIFU-KNN 예측) · `python src/optimize_ensemble.py` (가중치 최적화) · `python src/ensemble_submit.py` (경로 A — RRF 앙상블) · `python src/train_reranker_lgbm.py` (경로 B — LightGBM 리랭커)
 
 ---
 
@@ -425,6 +449,8 @@ recsys/
 │   ├── eval_proxy.py              # ckpt 로드 → leaderboard_proxy NDCG (재학습 없음)
 │   ├── submit.py                  # 단일 모델 체크포인트 → submission CSV
 │   ├── ensemble_submit.py         # 랭크 앙상블 + cart boost → submission CSV
+│   ├── train_reranker_lgbm.py     # LightGBM LambdaMART 리랭커 학습·추론 → submission_reranker_lgbm.csv
+│   ├── run_reranker_family_drop.py  # 피처 그룹 ablation (DROP_FAMILY 환경변수)
 │   ├── inference.py               # generate_predictions, generate_submission_long, validate_submission
 │   ├── metrics.py                 # ndcg_at_k, batched evaluate (freq/behavior/time 지원)
 │   ├── ensemble.py                # rank_ensemble() — RRF
@@ -463,8 +489,6 @@ recsys/
 │   ├── PLAN.md                    # 이 문서 — EDA·설계·구현 현황
 │   ├── OPERATION.md               # Phase별 운영 가이드 (CLI·체크리스트)
 │   └── TUNING.md                  # 하이퍼파라미터 튜닝 가이드
-├── run_tisasrec_cl4srec.sh        # TiSASRec + CL4SRec 순차 학습 스크립트
-├── run_ensemble_after_train.sh    # 학습 완료 후 앙상블 자동 실행 스크립트
 ├── requirements.txt               # 의존성 고정
 ├── .env.template                  # 환경변수 템플릿 (wandb API key 등)
 └── .env                           # 실제 환경변수 — .gitignore 필수
@@ -1128,15 +1152,26 @@ top_k: 10
 
 **실측 제출 (Public LB)**
 
-| 항목 | 내용 |
-| ---- | ---- |
-| 조합 | TiSASRec + BSARec + MB-STR + TIFU-KNN |
-| 설정 | [`conf/ensemble/rank.yaml`](../conf/ensemble/rank.yaml) (`optimize_ensemble.py` Val 가중치, `cart_boost: true`) |
-| 가중치 (optimize 후) | tisasrec **0.1364** · bsarec **0.0948** · mbstr **0.1542** · tifu_knn **0.6461** |
-| 제출 | `ensemble_submit.py` |
-| **Public LB NDCG@10** | **0.1441** |
+| # | 조합 | checkpoint_phase | 가중치 | 비고 | **Public LB NDCG@10** |
+|---|------|-----------------|--------|------|----------------------|
+| 1 | TiSASRec + BSARec + MB-STR + TIFU-KNN | tuning | tisasrec 0.1364 · bsarec 0.0948 · mbstr 0.1542 · tifu_knn 0.6461 | `optimize_ensemble.py` 300 trials, `cart_boost: true` | **0.1441** |
+| 2 | TiSASRec + BSARec + MB-STR + TIFU-KNN | full | optimize 재실행 (1000+ trials) | ⚠️ **val 누수** — full-train이 val 구간(Feb 9~22)을 학습에 포함하므로 optimize 가중치 부풀려짐 | **0.1435** ↓ |
+| 3 | TiSASRec + BSARec + MB-STR + TIFU-KNN | tuning | tifu_group_count=5, decay_within=0.93, decay_across=0.55 | TIFU 하이퍼파라미터 튜닝 | **0.1435** — 의미 없음 |
+| 4 | TiSASRec + BSARec + MB-STR + TIFU-KNN | tuning | #1 가중치 그대로 | 재현성 확인 | **0.1440** |
 
-> Val holdout 앙상블 NDCG@10(~0.35) 대비 LB **0.1441** — holdout Val·Proxy·Public LB 구간 차이 및 TIFU 고비중(~65%) 영향 검토 필요. Full-train ckpt·가중치 재탐색 후보.
+> **TIFU-KNN 가중치 0.6461 도미넌스 분석**: `optimize_ensemble.py`가 Val(Feb 9~22, cart+purchase)에서 최적화한 결과. TIFU의 시간 감쇠 특성이 holdout Val에서 유리하게 작용하나 LB 테스트 구간에서 과적합 가능성 있음.
+
+#### ⚠️ Full-train + optimize_ensemble.py 데이터 누수 경고
+
+`optimize_ensemble.py`는 항상 `make_holdout()`으로 Val(Feb 9~22)을 분리해 평가한다. **Full-train 체크포인트는 이 Val 구간을 학습에 포함**했으므로, optimize 결과로 얻은 가중치는 **신경망 모델이 Val GT를 이미 학습한 상태**에서 측정한 것 — 실제 LB에서 일반화되지 않는다.
+
+| 시나리오 | optimize_ensemble.py | 결과 |
+|---------|---------------------|------|
+| tuning ckpt + optimize | Val 미학습 → **누수 없음** ✓ | 신뢰 가능한 가중치 |
+| **full ckpt + optimize** | Val 학습 포함 → **누수** ✗ | 신경망 가중치 과대평가 → LB 하락 |
+| full ckpt + tuning 가중치 그대로 | optimize 미실행 | ← **다음 시도 후보** |
+
+Full-train ckpt로 제출하려면 `optimize_ensemble.py` 없이 **tuning 시절 가중치를 그대로** `rank.yaml`에 유지하고 `checkpoint_phase: full`로 바꿔 제출하는 것이 가장 안전하다.
 
 ##### 조합별 도메인·EDA 해설
 

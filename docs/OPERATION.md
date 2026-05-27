@@ -31,6 +31,8 @@ Phase 5  Full-train (cv=none, 전 기간, 선정 모델 전체)
 Phase 6  추론·앙상블·cart boost 후처리·제출 CSV 생성
           (cart boost는 ensemble_submit.py에 통합 — 별도 단계 불필요)
     ↓
+Phase 6-C  LightGBM 리랭커 (선택 — 앙상블 대안 또는 보완)
+    ↓
 대회 플랫폼 제출
 ```
 
@@ -661,6 +663,62 @@ print('user in train:', sub['user_id'].iloc[0] in set(train['user_id']))
 
 ---
 
+## Phase 6-C: LightGBM LambdaMART 리랭커 (선택)
+
+**목표**: 각 모델 Top-10 후보를 피처로 조합해 LightGBM LambdaMART로 리랭킹, 앙상블 대안 또는 보완으로 활용한다.
+
+**예상 소요**: 약 1~2시간 (데이터 로드·예측 수집 포함)
+
+**사전 조건**: 아래 체크포인트가 모두 존재해야 함
+
+| 모델 | tuning ckpt | full ckpt |
+|------|-------------|-----------|
+| TiSASRec | `outputs/tisasrec/run001_260520/tuning/best.pt` | `outputs/tisasrec/run002_260526/full/best.pt` |
+| BSARec | `outputs/bsarec/run001_260526/tuning/best.pt` | `outputs/bsarec/run002_260526/full/best.pt` |
+| MB-STR | `outputs/mbstr/run001_260526/tuning/best.pt` | `outputs/mbstr/run003_260526/full/best.pt` |
+
+### 6-C-1. 리랭커 학습 + 제출 생성
+
+```bash
+python src/train_reranker_lgbm.py
+# → outputs/submission_reranker_lgbm.csv
+# → outputs/reranker_feature_importance.csv
+```
+
+**파이프라인 요약**
+
+1. holdout split → val_users(GT+history 유저) 추출
+2. **tuning ckpt**로 val_users 예측 수집 (tisasrec / bsarec / mbstr + TIFU-KNN)
+3. 피처 빌드 (`rank_*`, `rr_*`, `in_*`, `item_pop_log1p`, `user_*cnt_log1p`, `carted_before` 등)
+4. LightGBM LambdaMART 학습 (early stopping 50, n_estimators 500)
+5. **full ckpt**로 전체 유저 예측 수집 → 리랭커 스코어링 → Top-10 보장 후 저장
+
+### 6-C-2. 피처 그룹 ablation
+
+특정 피처 그룹을 제거했을 때 성능 변화를 측정한다. `DROP_FAMILY` 환경변수로 제어.
+
+| `DROP_FAMILY` | 제거 대상 피처 패턴 |
+|---------------|---------------------|
+| `popularity`  | `item_pop*`, `item_recent*_pop*`, `freq*` 등 |
+| `tifu_rank`   | `*tifu*`, `rank_tifu*`, `rr_tifu*`, `in_tifu*` |
+| `user_activity` | `user_total_cnt*`, `user_recent*_cnt*` 등 |
+
+```bash
+DROP_FAMILY=tifu_rank     python src/run_reranker_family_drop.py
+DROP_FAMILY=popularity    python src/run_reranker_family_drop.py
+DROP_FAMILY=user_activity python src/run_reranker_family_drop.py
+# → outputs/ablation_reranker/drop_manifest_<family>.json
+```
+
+### Phase 6-C 완료 체크리스트
+
+- [ ] `outputs/submission_reranker_lgbm.csv` 행 수 6,382,570 확인
+- [ ] `outputs/reranker_feature_importance.csv` 생성 — 상위 피처 확인 (rank_* vs rr_* vs in_*)
+- [ ] offline valid ndcg@10 콘솔 출력 기록
+- [ ] ablation 실행 시 `drop_manifest_*.json` 확인 — 실제 제거된 컬럼 수 검증
+
+---
+
 ## Phase 6-B: cart 후처리 부스트
 
 **목표**: “장바구니에 담았으나 아직 구매하지 않은” 아이템을 Top-K 상위로 끌어올린다.
@@ -764,6 +822,8 @@ python src/ensemble_submit.py
 | TIFU-KNN 예측 생성       | `python src/train_tifu.py`          |
 | 앙상블 가중치 최적화     | `python src/optimize_ensemble.py`   |
 | 앙상블 (cart boost 포함) | `python src/ensemble_submit.py`     |
+| **LightGBM 리랭커**      | `python src/train_reranker_lgbm.py` |
+| 피처 ablation (tifu_rank) | `DROP_FAMILY=tifu_rank python src/run_reranker_family_drop.py` |
 
 ### 지원 `model=` 이름 (구현 완료)
 
@@ -782,6 +842,9 @@ python src/ensemble_submit.py
 | `outputs/submission_ensemble_*.csv`            | 앙상블 제출                          |
 | `outputs/YYYY-MM-DD/HH-MM-SS/.hydra/`          | 실행별 설정 스냅샷                   |
 | `outputs/tifu_knn/preds.pkl`                   | TIFU-KNN 예측 캐시 (`train_tifu.py`) |
+| `outputs/submission_reranker_lgbm.csv`         | LightGBM 리랭커 제출 파일            |
+| `outputs/reranker_feature_importance.csv`      | 리랭커 피처 중요도                   |
+| `outputs/ablation_reranker/drop_manifest_<family>.json` | 피처 그룹 ablation 결과     |
 | wandb project `recsys-2026`                    | 실험 이력                            |
 
 ---
@@ -810,3 +873,4 @@ python src/ensemble_submit.py
 | 2026-05-21 | CLI 정합: `wandb.name` 지원, Hydra `=` 공백 금지, eval_proxy/proxy·Full-train ckpt 구분, sweep 미구현 명시               |
 | 2026-05-21 | Full-train도 새 run 디렉터리 자동 생성으로 변경 (기존 run 덮어쓰기 제거) — Hydra 규칙 설명 업데이트                      |
 | 2026-05-21 | 코드 버그 수정 반영: MB-STR 패딩 불일치, submit·proxy_eval saferec/mbstr 지원, TIFU-KNN top_k, ensemble active_models 동적화 |
+| 2026-05-27 | Phase 6-C 추가 — LightGBM LambdaMART 리랭커(`train_reranker_lgbm.py`) 및 피처 그룹 ablation(`run_reranker_family_drop.py`) 반영 |
