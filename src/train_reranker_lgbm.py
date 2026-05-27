@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
+from tqdm import tqdm
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -382,72 +383,93 @@ def main():
         for m, pred in preds_full.items()
     }
 
-    out_pred    = {}
-    total_users = len(sample_user_order)
-    for i, uid in enumerate(sample_user_order, 1):
-        cand_set = set()
-        for m in model_names:
-            cand_set.update(preds_full[m].get(uid, []))
-        cand_set = list(cand_set)
+    RERANK_BATCH = 2000
+    out_pred     = {}
 
-        u_total = full_hist_maps["user_total_cnt"].get(uid, 0)
-        u_r14   = full_hist_maps["user_recent14_cnt"].get(uid, 0)
-        viewed  = full_hist_maps["viewed_map"].get(uid, set())
-        carted  = full_hist_maps["carted_map"].get(uid, set())
-        bought  = full_hist_maps["purchased_map"].get(uid, set())
+    batches = range(0, len(sample_user_order), RERANK_BATCH)
+    for batch_start in tqdm(batches, desc="reranking", unit="batch"):
+        batch_uids = sample_user_order[batch_start : batch_start + RERANK_BATCH]
 
-        feat_rows = []
-        item_rows = []
-        for iid in cand_set:
-            feat = {
-                "user_total_cnt_log1p":    np.log1p(u_total),
-                "user_recent14_cnt_log1p": np.log1p(u_r14),
-                "item_pop_log1p":          np.log1p(full_hist_maps["item_pop"].get(iid, 0)),
-                "item_recent14_pop_log1p": np.log1p(full_hist_maps["item_recent14_pop"].get(iid, 0)),
-                "seen_before":      int(iid in viewed),
-                "carted_before":    int(iid in carted),
-                "purchased_before": int(iid in bought),
-                "model_hit_count":  0,
-            }
+        rows     = []
+        uid_list = []
+        iid_list = []
+
+        for uid in batch_uids:
+            cand_set = set()
             for m in model_names:
-                r    = rank_maps_full[m].get(uid, {}).get(iid, 999)
-                in_m = int(r != 999)
-                feat[f"in_{m}"]   = in_m
-                feat[f"rank_{m}"] = r if in_m else 999
-                feat[f"rr_{m}"]   = (1.0 / r) if in_m else 0.0
-                feat["model_hit_count"] += in_m
-            feat_rows.append(feat)
-            item_rows.append(iid)
+                cand_set.update(preds_full[m].get(uid, []))
 
-        X_u    = pd.DataFrame(feat_rows)[feat_cols]
-        scores = ranker.predict(X_u, num_iteration=ranker.best_iteration_)
-        ranked = [x for _, x in sorted(zip(scores, item_rows), key=lambda z: z[0], reverse=True)]
+            u_total = full_hist_maps["user_total_cnt"].get(uid, 0)
+            u_r14   = full_hist_maps["user_recent14_cnt"].get(uid, 0)
+            viewed  = full_hist_maps["viewed_map"].get(uid, set())
+            carted  = full_hist_maps["carted_map"].get(uid, set())
+            bought  = full_hist_maps["purchased_map"].get(uid, set())
 
-        seen_items = set()
-        final      = []
-        for iid in ranked:
-            if iid not in seen_items:
-                final.append(iid)
-                seen_items.add(iid)
-            if len(final) == 10:
-                break
+            for iid in cand_set:
+                feat = {
+                    "user_total_cnt_log1p":    np.log1p(u_total),
+                    "user_recent14_cnt_log1p": np.log1p(u_r14),
+                    "item_pop_log1p":          np.log1p(full_hist_maps["item_pop"].get(iid, 0)),
+                    "item_recent14_pop_log1p": np.log1p(full_hist_maps["item_recent14_pop"].get(iid, 0)),
+                    "seen_before":      int(iid in viewed),
+                    "carted_before":    int(iid in carted),
+                    "purchased_before": int(iid in bought),
+                    "model_hit_count":  0,
+                }
+                for m in model_names:
+                    r    = rank_maps_full[m].get(uid, {}).get(iid, 999)
+                    in_m = int(r != 999)
+                    feat[f"in_{m}"]   = in_m
+                    feat[f"rank_{m}"] = r if in_m else 999
+                    feat[f"rr_{m}"]   = (1.0 / r) if in_m else 0.0
+                    feat["model_hit_count"] += in_m
+                rows.append(feat)
+                uid_list.append(uid)
+                iid_list.append(iid)
 
-        # top10 보장: 후보 부족 시 각 모델 예측에서 채움
-        if len(final) < 10:
-            for m in model_names:
-                for iid in preds_full[m].get(uid, []):
-                    if iid not in seen_items:
-                        final.append(iid)
-                        seen_items.add(iid)
-                    if len(final) == 10:
-                        break
+        if not rows:
+            for uid in batch_uids:
+                out_pred[uid] = []
+            continue
+
+        X_batch  = pd.DataFrame(rows)[feat_cols]
+        scores   = ranker.predict(X_batch, num_iteration=ranker.best_iteration_)
+        uid_arr  = np.array(uid_list)
+        iid_arr  = np.array(iid_list)
+
+        for uid in batch_uids:
+            mask = uid_arr == uid
+            if not mask.any():
+                out_pred[uid] = []
+                continue
+
+            ranked = [iid for _, iid in sorted(
+                zip(scores[mask], iid_arr[mask].tolist()),
+                key=lambda z: z[0], reverse=True,
+            )]
+
+            seen_items = set()
+            final      = []
+            for iid in ranked:
+                if iid not in seen_items:
+                    final.append(iid)
+                    seen_items.add(iid)
                 if len(final) == 10:
                     break
 
-        out_pred[uid] = final[:10]
+            # top10 보장: 후보 부족 시 각 모델 예측에서 채움
+            if len(final) < 10:
+                for m in model_names:
+                    for iid in preds_full[m].get(uid, []):
+                        if iid not in seen_items:
+                            final.append(iid)
+                            seen_items.add(iid)
+                        if len(final) == 10:
+                            break
+                    if len(final) == 10:
+                        break
 
-        if i % 50000 == 0:
-            print(f"reranked {i:,}/{total_users:,}")
+            out_pred[uid] = final[:10]
 
     print("=== save submission ===")
     sub_df = generate_submission_long(out_pred, sample_user_order, top_k=10)
