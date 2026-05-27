@@ -1,12 +1,13 @@
-weights:                 # tuning 최적화로 얻은 가중치 유지
-  tisasrec: 0.1364
-  bsarec:   0.0948
-  mbstr:    0.1542
-  tifu_knn: 0.6461
+weights:
+  tisasrec: 0.4762
+  bsarec: 0.055
+  mbstr: 0.1253
+  tifu_knn: 0.8432
+  cl4srec: 0.2931
 top_k: 10
 run_id: null
-checkpoint_phase: full
-cart_boost: true
+checkpoint_phase: tuning
+cart_boost: false
 tifu_group_count: 7
 tifu_decay_within: 0.9
 tifu_decay_across: 0.7

@@ -1,6 +1,6 @@
 name: cl4srec
 train_batch_size: 2048   # 대조 뷰 2× encode; OOM 시 train.train_batch_size= 로 오버라이드
-max_seq_len: 50
+max_seq_len: 100
 hidden_size: 256
 n_layers: 3
 n_heads: 4

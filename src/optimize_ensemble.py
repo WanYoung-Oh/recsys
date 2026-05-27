@@ -79,7 +79,13 @@ def _load_val_preds(model_name: str, val_seqs, val_user_ids, gt_cp,
 
     from inference import generate_predictions
     # TiSASRec: [B, L, L, hd] 시간 행렬 2개 → 배치당 메모리가 일반 모델의 L배
-    bs = 512 if model_name == "tisasrec" else cfg_base["eval_batch_size"]
+    # CL4SRec: max_seq_len=100으로 attention 행렬이 커서 배치 제한 필요
+    if model_name == "tisasrec":
+        bs = 512
+    elif model_name == "cl4srec":
+        bs = 1024
+    else:
+        bs = cfg_base["eval_batch_size"]
     preds = generate_predictions(
         model, val_user_ids.tolist(), m_val_seqs, idx2item, device,
         batch_size=bs,
