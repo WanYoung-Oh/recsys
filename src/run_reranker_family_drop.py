@@ -18,7 +18,6 @@ DROP_PATTERNS = {
     "popularity": [
         r"item_recent\d+_pop",
         r"item_pop",
-        r"pop_log1p",
         r"popularity",
         r"freq",
         r"frequency",
@@ -47,9 +46,15 @@ DROP_PATTERNS = {
     ],
 }
 
+if not DROP_FAMILY:
+    raise SystemExit(
+        f"[ERROR] DROP_FAMILY 환경변수가 설정되지 않았습니다. "
+        f"예: DROP_FAMILY=popularity python run_reranker_family_drop.py\n"
+        f"선택 가능 값: {list(DROP_PATTERNS.keys())}"
+    )
 if DROP_FAMILY not in DROP_PATTERNS:
     raise SystemExit(
-        f"[ERROR] DROP_FAMILY must be one of {list(DROP_PATTERNS.keys())}, got: {DROP_FAMILY}"
+        f"[ERROR] DROP_FAMILY must be one of {list(DROP_PATTERNS.keys())}, got: {DROP_FAMILY!r}"
     )
 
 regexes          = [re.compile(p, re.I) for p in DROP_PATTERNS[DROP_FAMILY]]

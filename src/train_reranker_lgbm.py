@@ -324,7 +324,6 @@ def main():
     ranker = lgb.LGBMRanker(
         objective="lambdarank",
         metric="ndcg",
-        ndcg_eval_at=[10],
         boosting_type="gbdt",
         learning_rate=0.05,
         num_leaves=31,
