@@ -140,7 +140,14 @@ def collect_nn_preds(model_name, phase, hist_df, item2idx, idx2item, user_ids, b
         kwargs["time_sequences"] = time_seqs
 
     # TiSASRec: [B,L,L,hd] 시간 행렬 2개 → 배치당 메모리 L배, 512 상한
-    bs = min(batch_size, 512) if model_name == "tisasrec" else batch_size
+    # max_seq_len > 50 모델(cl4srec=100): FFN 텐서가 비례해서 커지므로 배치 축소
+    BASE_SEQ_LEN = 50
+    if model_name == "tisasrec":
+        bs = min(batch_size, 512)
+    elif cfg.model.max_seq_len > BASE_SEQ_LEN:
+        bs = batch_size // (cfg.model.max_seq_len // BASE_SEQ_LEN)
+    else:
+        bs = batch_size
 
     try:
         preds = generate_predictions(
@@ -268,8 +275,12 @@ def eval_grouped_ndcg(df_scored, top_k: int = 10) -> float:
 def main():
     global N_ITEMS
 
+    ensemble_cfg = OmegaConf.load(ROOT / "conf" / "ensemble" / "rank.yaml")
+    nn_models    = [m for m in ensemble_cfg.weights.keys() if m != "tifu_knn"]
+    print(f"▶ 리랭커 대상 NN 모델: {nn_models}")
+
     print("=== load full data ===")
-    base_cfg = load_cfg("bsarec", "full")
+    base_cfg = load_cfg(nn_models[0], "full")
     df = load_data(base_cfg)
     item2idx, user2idx, idx2item = build_vocab(df)
     N_ITEMS = len(item2idx)
@@ -290,7 +301,7 @@ def main():
     # ── 튜닝 예측 수집 (리랭커 학습용) ──────────────────────────────
     print("=== collect tuning predictions for reranker training ===")
     preds_val = {}
-    for model_name in ["tisasrec", "bsarec", "mbstr"]:
+    for model_name in nn_models:
         p = collect_nn_preds(model_name, "tuning", train_df, item2idx, idx2item, val_users, batch_size=64)
         if p is not None:
             preds_val[model_name] = p
@@ -366,7 +377,7 @@ def main():
     print("=== collect full predictions for submission ===")
     preds_full        = {}
     active_full_models = []
-    for model_name in ["tisasrec", "bsarec", "mbstr"]:
+    for model_name in nn_models:
         p = collect_nn_preds(model_name, "full", df, item2idx, idx2item, sample_user_order, batch_size=64)
         if p is not None:
             preds_full[model_name] = p
