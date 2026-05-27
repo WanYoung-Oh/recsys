@@ -6,7 +6,7 @@ weights:
   cl4srec: 0.2931
 top_k: 10
 run_id: null
-checkpoint_phase: tuning
+checkpoint_phase: full
 cart_boost: false
 tifu_group_count: 7
 tifu_decay_within: 0.9
