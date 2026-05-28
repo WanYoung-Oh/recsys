@@ -1,8 +1,7 @@
 weights:
-  tisasrec: 0.1364
-  bsarec: 0.0948
-  mbstr: 0.1542
-  tifu_knn: 0.6461
+  tisasrec: 0.2205
+  bsarec: 0.0634
+  tifu_knn: 0.5574
 top_k: 10
 run_id: null
 checkpoint_phase: full
