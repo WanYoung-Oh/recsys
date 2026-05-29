@@ -2,7 +2,7 @@
 
 | 항목 | 내용 |
 | ---- | ---- |
-| 최종 수정 | 2026-05-27 |
+| 최종 수정 | 2026-05-28 |
 | LLM | Upstage **Solar Pro** API (`solar-pro3`) |
 | 파이프라인 | **LangGraph** 상태 그래프 |
 | UI | Streamlit |
@@ -18,7 +18,7 @@
 
 1. **일반 대화**와 **쇼핑 추천**을 구분하고
 2. 사용자 ID(또는 프로필)를 입력하면 **과거 행동 기반**으로
-3. **3가지 추천 유형**(유사 사용자 / 프로필 기반 / 신상품)의 상품과 **Solar Pro가 작성한 추천 사유**를 보여주는 MVP
+3. **4가지 추천 유형**(유사 사용자 / 프로필 기반 / 신상품 / 재방문)의 상품과 **Solar Pro가 작성한 추천 사유**를 보여주는 MVP
 
 ---
 
@@ -32,8 +32,8 @@ flowchart TB
     train --> aliasMap[id_aliases.json]
     aliasMap --> profiles[user_profiles.db SQLite]
     train --> items[item_catalog.json]
-    train --> simIndex[user_neighbors.faiss + user_neighbors_meta.pkl]
-    sub --> recIndex[user_recommendations.json]
+    train --> simIndex[user_neighbors.npy + user_neighbors_meta.pkl]
+    sub --> recIndex[user_recommendations.json = model_recs chunk]
     profiles --> ragStore[RAG 지식베이스]
     items --> ragStore
     recIndex --> ragStore
@@ -44,7 +44,7 @@ flowchart TB
     user[사용자 메시지]
     user --> router[의도 분류: 키워드 우선 → Solar Pro 보조]
     router -->|general| solarChat[Solar Pro 일반 응답]
-    router -->|shopping| retriever[RAG 검색 + 3종 추천 엔진]
+    router -->|shopping| retriever[RAG 검색 + 4종 추천 엔진]
     retriever --> context[컨텍스트 조립]
     context --> solarRec[Solar Pro 추천 사유 생성]
     solarRec --> ui[Streamlit UI]
@@ -110,7 +110,7 @@ rag_data/
 
 ### B. Item ID 매핑 — Semantic ID
 
-현재 계획의 `keds_0001`(카테고리 leaf + 시퀀스) 방식 대신, **카테고리 계층·브랜드·가격대를 ID 자체에 내재**시킨 Semantic ID를 사용합니다. Solar Pro가 ID만 보고도 상품의 핵심 속성을 추론할 수 있어, prompt의 메타데이터 반복 삽입을 줄일 수 있습니다.
+단순 `{leaf}_{seq}` 방식 대신 **카테고리 계층·브랜드·가격대를 ID 자체에 내재**시킨 Semantic ID를 채택합니다. Solar Pro가 ID만 보고도 상품의 핵심 속성을 추론할 수 있어, prompt의 메타데이터 반복 삽입을 줄일 수 있습니다.
 
 | 필드 | 예시 | 설명 |
 | ---- | ---- | ---- |
@@ -151,6 +151,15 @@ def make_price_bucket_fn(p33: float, p66: float):
         if price_median < p66:  return "mid"
         return "high"
     return price_bucket
+
+# 가격 표시 문자열 — 오프라인 단계에서 확정, Solar Pro·UI 전 구간에 일관 주입
+# 단위 확인 후 PRICE_SCALE을 결정 (예: 원본이 USD 기준이면 1100, 백원 단위면 100 등)
+# 미확인 상태에서는 "약 N단위" 형태로 명시적 레이블 사용
+PRICE_SCALE = 1000   # ← Phase 1 시작 전 train.parquet 가격 분포 확인 후 결정
+
+def format_price_display(price_median: float) -> str:
+    krw_approx = int(round(price_median * PRICE_SCALE, -2))   # 백 원 단위 반올림
+    return f"{krw_approx:,}원"   # 예: "72,000원"
 
 # 브랜드 slug — 영숫자·언더스코어만 허용 (특수문자·공백·비ASCII 제거)
 def brand_to_slug(brand: str) -> str:
@@ -219,7 +228,8 @@ shoes.keds.kapika.mid_0001
 Solar Pro는 `shoes.keds.kapika.mid_0001`만 보고 "keds 스타일 신발, kapika 브랜드, 중간 가격대"를 즉시 파악합니다.
 
 ```python
-# item_alias.json 구조 (1건 예시) — price_median은 원본 데이터 단위 그대로 저장
+# item_alias.json 구조 (1건 예시)
+# price_display: 오프라인 단계에서 PRICE_SCALE 적용한 표시용 문자열 — Solar Pro·UI 전 구간 공용
 {
   "18c11cbb-a18d-4a9e-bdea-6abd3f7d3c04": {
     "item_alias": "shoes.keds.kapika.mid_0001",
@@ -228,7 +238,8 @@ Solar Pro는 `shoes.keds.kapika.mid_0001`만 보고 "keds 스타일 신발, kapi
     "category_code": "apparel.shoes.keds",
     "brand": "kapika",
     "price_bucket": "mid",
-    "price_median": 72.05
+    "price_median": 72.05,
+    "price_display": "72,000원"   // PRICE_SCALE 확정 후 채워짐
   }
 }
 ```
@@ -278,7 +289,7 @@ CREATE TABLE user_profiles (
     profile_json  TEXT,   -- JSON 직렬화된 전체 프로필
     profile_text  TEXT    -- Solar Pro 주입용 한국어 텍스트
 );
-CREATE INDEX idx_user_alias ON user_profiles(user_alias);
+-- PRIMARY KEY가 자동으로 인덱스를 생성하므로 별도 CREATE INDEX 불필요
 ```
 
 유저당 아래 통계를 `profile_json`에 저장:
@@ -290,9 +301,9 @@ CREATE INDEX idx_user_alias ON user_profiles(user_alias);
 | `price_range` | 조회/구매 가격 p25~p75 | 가격대 맞춤 설명 |
 | `activity_level` | 전체 이벤트 수, 최근 14일 활동 | "활발한 쇼핑러" 등 서술 |
 | `recent_items` | 최근 10개 (**item_alias**, category, brand, event_type) | LLM 맥락 |
-| `seen_items` | view·cart·purchase 전체 이력 item_id set | unseen 필터 (유형1·3 공통) |
+| `seen_items` | `{item_alias: {score, event_count, last_event_type, last_event_date}}` — event weight × temporal decay 사전 계산 | unseen 필터(유형1·3) + revisit 점수(유형4) 겸용 |
 | `cart_items` | cart 했지만 purchase 안 한 상품 | "장바구니에 담아두신..." |
-| `purchased_items` | purchase 이력 | 중복 추천 방지 (seen_items의 부분집합) |
+| `purchased_items` | purchase 이력 (item_alias + purchase_date) | 중복 추천 방지, revisit에서 최근 구매 제외 기준 |
 
 **가중치 예시** (기존 TIFU-KNN·리랭커와 일관):
 
@@ -372,11 +383,33 @@ neighbors = np.vstack(all_neighbors)   # (N, 20)
 ```
 rag_data/
 ├── user_neighbors.npy          # (N, 20) int32 — faiss index 순서 기준 행 번호
-└── user_neighbors_meta.pkl     # {faiss_row_idx: user_alias} 역매핑
+├── user_neighbors_meta.pkl     # {faiss_row_idx: user_alias} 역매핑
+└── user_alias_to_row.pkl       # {user_alias: faiss_row_idx} 정방향 맵 (런타임 lookup용)
 ```
 
-- 유사 유저가 **purchase/cart**한 상품 중, 대상 유저가 본 적 없는 것 추천
+**런타임 lookup 절차** (`recommend_cf` 내부):
+
+```python
+import pickle, numpy as np
+
+# 오프라인 build 시 한 번만 로드 (st.session_state 또는 모듈 캐시)
+alias_to_row = pickle.load(open("rag_data/user_alias_to_row.pkl", "rb"))
+row_to_alias = pickle.load(open("rag_data/user_neighbors_meta.pkl", "rb"))
+neighbors_npy = np.load("rag_data/user_neighbors.npy")   # (N, 20)
+
+def recommend_cf(profile: dict) -> list[str]:
+    row = alias_to_row.get(profile["user_alias"])
+    if row is None:
+        return []   # FAISS 미빌드 시 빈 리스트 → collaborative 섹션 숨김
+    neighbor_rows   = neighbors_npy[row]               # (20,)
+    neighbor_aliases = [row_to_alias[r] for r in neighbor_rows]
+    # 이웃의 purchase > cart 가중 합산, seen_items 제외 후 Top-N 반환
+    ...
+```
+
+- 유사 유저가 **purchase/cart**한 상품 중, `seen_items`에 없는 것 추천
 - `--sample 1000` 개발 모드에서는 **submission에 포함된 유저만** 샘플링해 인덱스 구성
+- **FAISS 미빌드 시 fallback**: `user_alias_to_row.pkl` 없으면 `recommend_cf`가 빈 리스트 반환 → `rec_engine`이 collaborative 키를 빈 리스트로 설정 → Streamlit에서 해당 섹션 숨김 처리
 
 > **참고**: 기존 TIFU-KNN(`src/models/tifu_knn.py`)은 "자기 히스토리만" 쓰므로, "유사 취향 사용자" 추천은 이 **별도 user-user CF 모듈**이 담당합니다.
 
@@ -395,7 +428,7 @@ rag_data/
 | Chunk ID | 내용 | 검색 키 |
 | -------- | ---- | ------- |
 | `user_profile` | 프로필 JSON + profile_text (**user_alias** 포함) | user_alias |
-| `model_recs` | submission Top-10 + **Semantic item_alias** (속성 내재) | user_alias |
+| `model_recs` | submission Top-10 + **Semantic item_alias** (속성 내재) — `rag_data/user_recommendations.json`에 저장 | user_alias |
 | `item_meta` | **Semantic item_alias**별 l2/l3/brand/price_bucket, price_median, 인기도 | item_alias / l2 category |
 | `similar_user_evidence` | "유사 유저 user_00142가 shoes.keds.respect.mid_0007 구매" 근거 | user_alias |
 
@@ -423,7 +456,7 @@ items = df.groupby("item_id").agg(
 
 ---
 
-## 5. 3가지 추천 범주 + LLM 사유
+## 5. 4가지 추천 범주 + LLM 사유
 
 각 유형당 **Top-3~5개** 후보를 선정한 뒤, Solar Pro가 **사유만** 자연어로 작성 (상품 선택은 규칙 기반 → hallucination 방지).
 
@@ -434,7 +467,7 @@ items = df.groupby("item_id").agg(
 로직:
   1. Top-20 유사 유저 조회 (user_neighbors_meta.pkl로 역변환)
   2. 유사 유저의 purchase > cart > view 순으로 점수 합산
-  3. 대상 유저가 seen_before=False 인 상품만
+  3. 대상 유저의 seen_items에 없는 상품만 (unseen 필터)
 출력 예: "비슷한 취향의 user_00142 등 12명이 구매한 shoes.keds.respect.mid_0007"
 ```
 
@@ -451,39 +484,102 @@ items = df.groupby("item_id").agg(
 
 ### 유형 3: 신상품 추천 (Recency + Personalized Unseen)
 
-**신상품의 정의**: "데이터 기준 최신 상품" 이 아니라 **"해당 유저가 아직 보지 않은 상품 중 가장 최근에 등장한 상품"** 으로 정의합니다. 고정 데이터셋에서 동일 신상품 풀이 모든 유저에게 똑같이 나오는 문제를 방지하고, 개인화 수준을 높입니다.
+**신상품의 정의**: "데이터 기준 최신 상품" 이 아니라 **"해당 유저가 아직 보지 않은 상품 중 가장 최근에 등장한 상품"** 으로 정의합니다.
+
+**오프라인 캐시 전략**: 런타임마다 전체 item_catalog를 순회하면 활동 많은 유저에서 latency가 급증합니다. 오프라인 build 시점에 신상품 pool을 카테고리별로 미리 정렬해 JSON으로 캐싱해두면, 런타임은 set 차집합 1회로 끝납니다.
+
+```python
+# 오프라인 build (build_rag_index.py)
+# recency_pool.json: {l2_category: [item_alias, ...], ...} (last_seen_date 내림차순)
+recency_pool = defaultdict(list)
+for item_alias, meta in item_catalog.items():
+    if meta["last_seen_date"] >= cutoff_date:   # 데이터 최종일 - 14일
+        recency_pool[meta["l2"]].append(item_alias)
+# 각 카테고리 내 submission 순위 기준으로 정렬 후 저장
+
+# 런타임 (recommend_recency)
+# seen_items_set: profile["seen_items"].keys() → O(1) 조회
+def recommend_recency(profile: dict, recency_pool: dict, top_n: int = 5) -> list[str]:
+    seen = set(profile["seen_items"].keys())
+    for fallback in ["cat+brand", "cat", "all"]:
+        candidates = _filter_recency(profile, recency_pool, fallback)
+        result = [a for a in candidates if a not in seen][:top_n]
+        if result:
+            return result
+    # fallback ④: unseen 없으면 미구매 상품으로 대체
+    purchased = set(p["item_alias"] for p in profile.get("purchased_items", []))
+    return [a for a in recency_pool.get("all", []) if a not in purchased][:top_n]
+```
 
 ```
-입력: item_catalog.last_seen_date + user_profile (seen_items 포함)
-로직:
-  0. [핵심] 신상품 후보 = 전체 item_catalog 중
-     - 데이터 상위 14일 내 등장 (last_seen_date 기준)
-     - AND 해당 유저의 seen_items(view·cart·purchase 전체)에 없는 상품
-     → 유저마다 다른 신상품 풀 생성
-  1. [필수] 유저 프로필 top_categories_l2 와 교집합 → 카테고리 필터
-  2. [선택] 유저 프로필 top_brands 와 교집합 → 브랜드 필터 (결과 없으면 생략)
-  3. submission 순위가 높을수록 가중 정렬
-  4. Top-3~5 반환 (구매 이력 이미 0단계에서 제외됨)
+런타임 로직 (단순화):
+  0. recency_pool[category] (오프라인 캐시) - seen_items_set = unseen 신상품 후보
+  1. [필수] top_categories_l2 카테고리 필터
+  2. [선택] top_brands 브랜드 필터
+  3. submission 순위 정렬 (pool이 이미 정렬됨)
+  4. Top-3~5 반환
 출력 예: "아직 보지 않으신 최신 jacket.respect.mid_0045 (평소 즐겨보시는 jacket 카테고리, 모델 추천 3위)"
 ```
 
-> **인터섹션 주의**: 0단계 unseen 필터 후 카테고리 교집합까지 적용하면 후보가 0이 될 수 있습니다. fallback 순서: ① unseen + 카테고리 + 브랜드 → ② unseen + 카테고리 → ③ unseen만(카테고리 무관) → ④ 전체 신상품 풀 + 미구매 필터.
+> **인터섹션 주의**: fallback 순서: ① cat+brand → ② cat → ③ unseen 전체 → ④ 미구매 전체. pool은 오프라인 캐시이므로 런타임 연산은 set 차집합만 수행.
 
 > **데모 안내**: 고정 데이터 기반이므로 "신상품 풀" 자체는 동일하지만, unseen 필터로 유저마다 다른 결과가 나옵니다. 데모 시나리오 및 README에 "2020-02-29 기준 최신 상품 중 본인 미열람"임을 명시합니다.
 
-### 3종 추천 간 중복 제거 (Dedup)
+### 유형 4: 재방문 추천 (Revisit)
 
-동일 상품이 여러 유형에 중복 등장하면 데모 품질이 낮아 보입니다. `rec_engine` 노드에서 후보를 확정하기 전에 아래 순서로 dedup합니다.
+**근거**: EDA에서 유저-아이템 재방문율 14.6%(view/cart/purchase 무관), TIFU-KNN이 sequential 4종 중 최고 성능 — 반복 상호작용이 이 데이터의 핵심 패턴. 유형 1·2·3이 unseen 풀을 다루는 반면, revisit은 **이미 관심을 보인 상품 중 다시 볼 가능성이 높은 것**을 추천합니다. seen 풀과 unseen 풀이 완전히 분리되어 기존 dedup 로직과 충돌하지 않습니다.
 
 ```
-우선순위: collaborative > content > recency
+입력: profile['seen_items'] — {item_alias: {score, event_count, last_event_type, last_event_date}}
+로직:
+  1. seen_items에서 revisit 점수 계산 (사전 계산값 활용):
+       score = Σ (event_weight × temporal_decay(last_event_date))
+       event_weight: view=1.0, cart=25.0, purchase=50.0  (TIFU-KNN·리랭커와 동일)
+       temporal_decay: exp(-λ × days_since_event), λ는 train 기간(90일 기준)
+  2. 최근 N일 이내 구매 항목 제외 (너무 최근 구매는 "이미 해결") — N=14 권장
+  3. score 내림차순 정렬 → Top-3~5 반환
+출력 예: "장바구니에 3번 담으셨던 shoes.keds.kapika.mid_0001, 아직 결정 못 하셨나요?"
+```
+
+> **활동 적은 유저 fallback**: seen_items가 3개 미만이면 revisit 섹션을 숨기거나 "아직 탐색 중인 상품이 충분하지 않아요" 메시지로 대체합니다.
+
+> **구현 세부**: `seen_items` 점수 계산 방식(decay λ, 최근 구매 제외 기준 N)은 Phase 2에서 별도 논의.
+
+### 4종 추천 간 중복 제거 (Dedup)
+
+유형 1·2·3은 **unseen 풀**, 유형 4(revisit)는 **seen 풀** — 두 풀이 서로 교집합이 없으므로 revisit은 dedup 대상 외입니다. unseen 풀 내에서만 아래 순서로 dedup합니다.
+
+```
+unseen 풀 내 우선순위: collaborative > content > recency
 1. collaborative 후보를 확정 (Top-3~5)
 2. content 후보에서 collaborative와 겹치는 item_alias 제거 후 Top-3~5 추출
 3. recency 후보에서 collaborative·content와 겹치는 item_alias 제거 후 Top-3~5 추출
 4. 각 유형이 최소 1개 이상 남도록 보장 — 부족하면 해당 유형 후보 풀을 확장(k+5)해 재시도
+   단, 최대 MAX_EXPAND=2회까지만 확장 허용 (무한 루프 방지)
+
+revisit(유형 4)는 독립 섹션 — dedup 불필요, seen 풀 자체가 격리됨
 ```
 
-> **의도**: 3개 섹션이 모두 다른 상품을 보여줘야 "3가지 추천 관점"이 의미 있습니다.
+```python
+MAX_EXPAND = 2  # 최대 2회까지만 k+5 확장 허용 — 무한 루프 방지
+
+def dedup_with_expand(
+    candidates_pool: list[str],
+    excluded: set[str],
+    top_n: int,
+    max_expand: int = MAX_EXPAND,
+) -> list[str]:
+    k = top_n
+    result: list[str] = []
+    for _ in range(max_expand + 1):   # 초기 시도 1회 + 최대 2회 확장
+        result = [a for a in candidates_pool[:k] if a not in excluded][:top_n]
+        if result:
+            return result
+        k += 5
+    return result   # MAX_EXPAND 초과 후에도 빈 경우 → 해당 섹션 숨김 처리
+```
+
+> **의도**: 4개 섹션이 서로 다른 관점을 보여줍니다. unseen 3종은 "새로운 발견", revisit은 "다시 생각해볼 상품"으로 자연스럽게 역할이 분리됩니다.
 
 ### LLM 역할 분리 (중요)
 
@@ -521,7 +617,7 @@ class GraphState(TypedDict):
     # 출력
     response:      Optional[str]                # 최종 응답 텍스트
     # MemorySaver가 thread_id별 상태를 자동 누적 — chat_history 수동 전달 불필요
-    # app 인스턴스를 st.session_state에 저장해야 세션 내 멀티턴이 유지됨 (app.py 참고)
+    # app은 graph.py 모듈 전역 컴파일; 세션 격리는 st.session_state.thread_id로 처리 (app.py 참고)
 ```
 
 ### 그래프 노드 구성
@@ -536,7 +632,8 @@ flowchart TD
 
   alias_resolver -->|needs_user_id=False| profile_loader
   alias_resolver -->|needs_user_id=True| ask_user_id
-  profile_loader --> rec_engine
+  profile_loader -->|profile 있음| rec_engine
+  profile_loader -->|profile 없음| END
   rec_engine --> context_builder
   context_builder --> solar_explainer
   solar_explainer --> END([END])
@@ -549,8 +646,8 @@ flowchart TD
 | ---- | ---- | -------------- |
 | `intent_router` | alias 패턴 감지 → 키워드 우선 → 미매칭 시 Solar Pro (3-class) | 조건부 1회 |
 | `alias_resolver` | `user_00001` 파싱 → 원본 user_id 역변환 | 없음 |
-| `profile_loader` | SQLite O(1) lookup + submission + neighbors | 없음 |
-| `rec_engine` | 3종 추천 후보 생성 (규칙 기반) | 없음 |
+| `profile_loader` | SQLite O(1) lookup (user_profiles.db) — submission·neighbors 조회는 rec_engine에서 처리 | 없음 |
+| `rec_engine` | 4종 추천 후보 생성 (규칙 기반) | 없음 |
 | `context_builder` | 프로필 + 후보 → prompt 컨텍스트 조립 | 없음 |
 | `solar_explainer` | 후보 고정 후 사유 생성 | 1회 |
 | `general_chat` | 일반 대화 응답 | 1회 (streaming) |
@@ -560,12 +657,18 @@ flowchart TD
 
 ```python
 from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import MemorySaver
 
 USER_ALIAS_PATTERN = re.compile(r"\buser_\d+\b")
 
 def intent_router(state: GraphState) -> GraphState:
     msg = state["message"]
 
+    # 0순위: session_state에서 주입된 user_alias가 이미 있고 쇼핑 관련 메시지 →
+    #        "추천해줘" 한 마디로도 바로 추천 경로 진입, ID 재요청 없음
+    if state.get("user_alias") and any(kw in msg for kw in SHOPPING_KEYWORDS | {"추천", "보여줘", "알려줘"}):
+        state["intent"] = "shopping"
+        return state
     # 1순위: user_alias 패턴 직접 감지 — API 호출 없이 즉시 alias_resolver로
     if USER_ALIAS_PATTERN.search(msg):
         state["intent"] = "user_alias"
@@ -582,7 +685,7 @@ def alias_resolver(state: GraphState) -> GraphState:
     alias = extract_user_alias(msg)   # r"user_\d+" 패턴 추출
 
     if alias is None:
-        # 멀티턴: 이전 턴에서 이미 user_alias가 설정된 경우 그대로 유지
+        # 멀티턴 또는 사이드바 dropdown으로 이미 user_alias 주입된 경우 그대로 유지
         if state.get("user_alias"):
             state["needs_user_id"] = False
             return state
@@ -614,6 +717,7 @@ def rec_engine(state: GraphState) -> GraphState:
         "collaborative": recommend_cf(profile),
         "content":       recommend_cb(profile),
         "recency":       recommend_recency(profile),
+        "revisit":       recommend_revisit(profile),  # seen 풀 — dedup 불필요
     }
     return state
 
@@ -637,40 +741,46 @@ graph.add_node("solar_explainer", solar_explainer)
 graph.add_node("general_chat",    general_chat)
 graph.add_node("ask_user_id",     ask_user_id)
 
+def route_after_profile(state: GraphState) -> str:
+    # profile 없으면 response가 이미 설정됨 → END로 직행, API 낭비 방지
+    return END if not state.get("profile") else "rec_engine"
+
 graph.set_entry_point("intent_router")
-graph.add_conditional_edges("intent_router",  route_after_intent)
-graph.add_conditional_edges("alias_resolver", route_after_alias)
-graph.add_edge("profile_loader",  "rec_engine")
+graph.add_conditional_edges("intent_router",   route_after_intent)
+graph.add_conditional_edges("alias_resolver",  route_after_alias)
+graph.add_conditional_edges("profile_loader",  route_after_profile)
 graph.add_edge("rec_engine",      "context_builder")
 graph.add_edge("context_builder", "solar_explainer")
 graph.add_edge("solar_explainer", END)
 graph.add_edge("general_chat",    END)
 graph.add_edge("ask_user_id",     END)
 
-# graph.py는 미컴파일 graph 객체만 노출 — 컴파일(MemorySaver 생성)은 app.py에서 세션별로 수행
-uncompiled_graph = graph
+# graph.py 마지막 줄 — 모듈 전역에서 1회 컴파일 (MemorySaver 인스턴스 공유)
+# 세션 격리는 thread_id로 처리 (app.py 참고)
+from langgraph.checkpoint.memory import MemorySaver
+app = graph.compile(checkpointer=MemorySaver())
 ```
 
 ### Streamlit 연동 (MemorySaver + thread_id)
 
 **세션 내 멀티턴 대화**를 지원합니다. 탭을 닫으면 자연스럽게 초기화되고, 세션이 살아있는 동안은 이전 대화 맥락을 유지합니다.
 
-핵심은 `app`(MemorySaver 포함)을 **`st.session_state`에 한 번만 생성**하는 것입니다. Streamlit은 매 상호작용마다 스크립트를 재실행하지만, `st.session_state`에 저장된 객체는 재실행 간에 유지됩니다. `app`을 모듈 최상단에서 생성하면 Streamlit 프로세스 재시작 시 MemorySaver 상태가 초기화되지만, `st.session_state`에 저장하면 **같은 브라우저 세션 내에서는 대화 히스토리가 보존**됩니다.
+`app`(MemorySaver 포함)은 **`graph.py` 모듈 전역에서 1회만 컴파일**합니다. Streamlit 재실행(rerun) 시에도 모듈은 프로세스가 살아있는 한 재임포트되지 않으므로 MemorySaver 인스턴스가 유지됩니다. 각 브라우저 세션의 대화 격리는 `st.session_state`에 저장된 **고유 `thread_id` 문자열**로 처리합니다.
 
 ```python
-# mvp_app/app.py
-import uuid
+# src/mvp/graph.py — 마지막 줄 (모듈 전역 1회 컴파일)
 from langgraph.checkpoint.memory import MemorySaver
-from src.mvp.graph import uncompiled_graph   # 미컴파일 graph 객체
+app = graph.compile(checkpointer=MemorySaver())
 
-# app과 session_id를 세션 시작 시 1회만 생성 — rerun 시에도 재사용
-# MemorySaver를 여기서 생성해야 세션별로 독립된 메모리 인스턴스를 갖게 됨
-if "app" not in st.session_state:
-    st.session_state.app        = uncompiled_graph.compile(checkpointer=MemorySaver())
-    st.session_state.session_id = str(uuid.uuid4())
+# mvp_app/app.py — session_state에는 thread_id 문자열만 저장
+import uuid
+from src.mvp.graph import app   # 모듈 전역 app 임포트
 
-app    = st.session_state.app
-config = {"configurable": {"thread_id": st.session_state.session_id}}
+# 세션 최초 진입 시 고유 thread_id 생성 — rerun 시 재사용
+if "thread_id" not in st.session_state:
+    st.session_state.thread_id = str(uuid.uuid4())
+
+config = {"configurable": {"thread_id": st.session_state.thread_id}}
 
 # MemorySaver가 thread_id별 대화 상태를 자동 누적 — chat_history 수동 전달 불필요
 result = app.invoke(
@@ -680,7 +790,7 @@ result = app.invoke(
 st.chat_message("assistant").write(result["response"])
 ```
 
-> **대화 초기화**: 사이드바에 "대화 초기화" 버튼을 두고 `st.session_state.pop("app")` 호출하면 새 MemorySaver로 재시작됩니다.
+> **대화 초기화**: 사이드바에 "대화 초기화" 버튼을 두고 `st.session_state["thread_id"] = str(uuid.uuid4())` 호출하면 새 thread_id로 대화가 초기화됩니다.
 
 ### 의도 분류 (intent_router 내부) — 3단계 우선순위
 
@@ -723,10 +833,12 @@ INTENT_CLASSIFY_SYSTEM = """
 - 채팅에서 `user_00001` 입력 시 해당 유저로 인식 (`display_name` 단독 입력은 미지원)
 - 메인: 채팅 UI (`st.chat_message`)
 - 쇼핑 모드 진입 시: **프로필 카드** 먼저 표시 (별칭, top 카테고리, 브랜드, 최근 활동)
-- 추천 응답: 3개 섹션 accordion, 상품은 **`shoes.keds.kapika.mid_0001 · 72.05`** 형태 (가격 단위는 데이터 원본 기준 — 단위 확인 후 포맷 결정)
-  - "비슷한 분들이 구매한 상품"
-  - "내 취향에 맞는 상품"
-  - "새로 나온 상품"
+- 추천 응답: 4개 섹션 accordion, 상품은 **`shoes.keds.kapika.mid_0001 · 72,000원`** 형태 (`price_display` 필드 사용 — 오프라인 단계에서 PRICE_SCALE 확정 후 생성)
+  - "비슷한 분들이 구매한 상품" (collaborative) — FAISS 미빌드 시 섹션 숨김
+  - "내 취향에 맞는 상품" (content)
+  - "새로 나온 상품" (recency)
+  - "다시 살펴볼 상품" (revisit) — seen_items 부족 시 섹션 숨김
+- **session_state ↔ LangGraph 동기화**: 사이드바 dropdown에서 유저를 선택하면 `st.session_state["user_alias"]`를 갱신하고 `invoke` 시 state에 주입. `intent_router`는 `user_alias`가 이미 있으면 쇼핑 메시지에서 즉시 추천 경로로 진입(ID 재요청 없음). dropdown 변경 시 `st.session_state["user_alias"]`만 교체하면 다음 메시지부터 새 유저로 자동 전환
 
 ---
 
@@ -753,12 +865,12 @@ src/mvp/
 ├── id_alias.py             # user/item 별칭 생성·역변환 (최우선)
 ├── build_rag_index.py      # 오프라인: alias + 프로필·카탈로그·유사유저·submission
 ├── user_profile.py         # 프로필 집계 → user_profiles.db (SQLite)
-├── recommenders.py         # 3종 추천 엔진 (rec_engine 노드 내부)
+├── recommenders.py         # 4종 추천 엔진 (rec_engine 노드 내부)
 ├── rag_retriever.py        # user_alias → context chunks (profile_loader 노드)
 ├── solar_client.py         # Solar Pro API wrapper
 ├── graph_state.py          # GraphState TypedDict 정의
 ├── nodes.py                # LangGraph 노드 함수 전체 (intent_router ~ ask_user_id)
-├── graph.py                # StateGraph 조립 + compile() → app
+├── graph.py                # StateGraph 조립 + 모듈 전역 compile() → app (MemorySaver 포함)
 └── intent_router.py        # 키워드 우선 → Solar Pro 보조 분류 (nodes.py에서 호출)
 
 mvp_app/
@@ -768,7 +880,7 @@ mvp_app/
 ### API 비용 절감
 
 - 의도 분류: 키워드 매칭 우선 → **Solar Pro 호출은 키워드 미매칭 시만** (`max_tokens=50`)
-- 추천 사유: 후보 9~15개 고정, `temperature=0.3`
+- 추천 사유: 4종 × 최대 5개 = **최대 20개** 후보 고정, `temperature=0.3` (섹션별 소제목 포함 구조화 JSON으로 전달)
 - 일반 대화: streaming (`stream=True`)
 
 ---
@@ -787,8 +899,10 @@ mvp_app/
 
 ### Phase 2: 추천 엔진 (1~2일)
 
-1. `recommenders.py` — 프로필 기반 + submission 추천 우선 구현 (가장 안정적)
-2. 중복 제거 — 구매 이력 제외, 3종 간 dedup 규칙 적용
+1. `recommenders.py` — 프로필 기반(content) + submission 우선 구현 (가장 안정적)
+2. 신상품(recency) — unseen 필터 + 카테고리 fallback 4단계
+3. 재방문(revisit) — `seen_items` score 기반, decay λ·최근구매 제외 N 결정 (§5 유형4 참고)
+5. 중복 제거 — unseen 유형1·2·3 간 dedup, revisit은 독립 (seen 풀)
 3. **[선택] 유사 사용자(CF)**: FAISS GPU 배치 계산 — `user_neighbors.npy` + `user_neighbors_meta.pkl`
    - 데모에서 "유사 사용자" 섹션이 필수가 아니라면 Phase 5 이후로 미룰 수 있음
    - `--sample 1000` 단계에서는 submission 포함 유저만으로 인덱스 구성, full build는 별도 실행
@@ -797,7 +911,7 @@ mvp_app/
 
 1. `graph_state.py` — `GraphState` TypedDict 정의
 2. `nodes.py` — 전체 노드 함수 구현 (`intent_router`, `alias_resolver`, `profile_loader`, `rec_engine`, `context_builder`, `solar_explainer`, `general_chat`, `ask_user_id`)
-3. `graph.py` — `StateGraph` 조립, 조건부 엣지 설정, `app = graph.compile()`
+3. `graph.py` — `StateGraph` 조립, 조건부 엣지 설정, `uncompiled_graph` 노출 (compile은 `app.py`에서 세션별 수행)
 4. `solar_client.py`, `intent_router.py` (키워드 우선 분류 포함)
 5. structured prompt 템플릿 (프로필 + 후보 + evidence)
 6. API key `.env` 연동 (`.env.template`에 `UPSTAGE_API_KEY` 추가)
@@ -824,10 +938,10 @@ mvp_app/
 | 2 | 유저 프로필 (SQLite) | `src/mvp/user_profile.py`, `rag_data/user_profiles.db` |
 | 3 | FAISS 유사 유저 **(선택, Phase 2 참고)** | `rag_data/user_neighbors.npy`, `user_neighbors_meta.pkl` |
 | 4 | RAG 인덱스 빌드 | `src/mvp/build_rag_index.py`, `rag_data/` |
-| 5 | 3종 추천 엔진 (신상품 인터섹션 포함) | `src/mvp/recommenders.py` |
+| 5 | 4종 추천 엔진 (신상품 인터섹션 + 재방문 TIFU 스타일 포함) | `src/mvp/recommenders.py` |
 | 6 | LangGraph 상태 + 노드 + MemorySaver | `src/mvp/graph_state.py`, `nodes.py`, `graph.py` |
 | 7 | Solar Pro 연동 | `src/mvp/solar_client.py`, `intent_router.py` |
-| 8 | Streamlit 앱 (thread_id 세션 관리) | `mvp_app/app.py` |
+| 8 | Streamlit 앱 (모듈 전역 app + thread_id 세션 격리) | `mvp_app/app.py` |
 | 9 | 환경 변수 | `.env.template`에 `UPSTAGE_API_KEY` |
 
 ---
@@ -835,11 +949,16 @@ mvp_app/
 ## 10. 실행 방법 (완성 후)
 
 ```bash
-# 1. RAG 인덱스 + ID 별칭 + FAISS 유사 유저 생성 (최초 1회, 30~60분)
+# 1-A. 전체 빌드 (ID 별칭 + 프로필 + RAG + FAISS, 최초 1회, 30~60분)
 python src/mvp/build_rag_index.py \
   --submission outputs/submission_reranker_lgbm.csv
 
-# 개발 중 빠른 검증 (submission 포함 유저 1000명만)
+# 1-B. FAISS 제외 빌드 — Phase 1·2 초기 개발 또는 CF 섹션 불필요 시 (~5분)
+python src/mvp/build_rag_index.py \
+  --submission outputs/submission_reranker_lgbm.csv \
+  --skip-faiss
+
+# 1-C. 개발 중 빠른 검증 (submission 포함 유저 1000명만, FAISS 포함)
 python src/mvp/build_rag_index.py \
   --submission outputs/submission_reranker_lgbm.csv \
   --sample 1000
@@ -857,7 +976,7 @@ streamlit run mvp_app/app.py
 - 실제 회원가입/로그인 (현재는 **user_00001** dropdown 선택 방식)
 - 실시간 행동 반영 (현재는 2020-02-29까지 고정 데이터)
 - 벡터 DB + 임베딩 RAG (카테고리 자연어 검색)
-- 멀티턴 쇼핑 대화 ("더 저렴한 걸로", "다른 브랜드는?")
+- **추천 재질의 멀티턴** ("더 저렴한 걸로", "다른 브랜드는?" 등 추천 파라미터 변경) — §6의 MemorySaver가 지원하는 "유저 ID 기억·대화 맥락 유지"와는 다름. MVP에는 전자만 없고 후자는 포함됨
 - Solar Pro function calling으로 추천 파라미터 동적 조정
 - `display_name` 채팅 입력 지원 (동명이인 disambiguation UI 포함)
 - **[Semantic ID 고도화] RQ-VAE 기반 Codebook Semantic ID**: item embedding을 계층적 코드북으로 양자화하여 의미적으로 유사한 상품에 공통 prefix 부여 (예: `item_17_42_8`). LLM이 item ID를 직접 **생성(generative retrieval)** 하는 구조로 전환할 때 유효하며, beam search로 후보를 탐색할 수 있음. 현재 MVP는 "LLM이 설명만, 상품 선정은 Python" 구조여서 오버킬이나, 완전한 생성형 추천 시스템으로 확장 시 검토.
@@ -872,11 +991,12 @@ streamlit run mvp_app/app.py
 | Semantic ID 충돌/혼동 | `(L2, L3, brand, price_bucket)` 그룹별 독립 시퀀스; ID 자체에 속성 내재로 혼동 최소화. alias_resolver에서 형식 불일치 시 전체 alias 재요청 |
 | display_name 중복 | 채팅 파싱은 `user_00001` 형태만 허용; 한국어 이름 감지 시 `ask_user_id` 노드가 안내 메시지 생성 (`korean_name_detected` 플래그 경유) |
 | 런타임 메모리 과부하 | JSONL 전체 로드 → **SQLite O(1) 디스크 룩업**으로 대체 |
-| Streamlit 재시작 시 상태 유실 | **MemorySaver + thread_id**로 LangGraph 내부 세션 관리 |
+| Streamlit 재시작 시 상태 유실 | `app`은 모듈 전역 MemorySaver로 컴파일; 재시작 시 상태는 초기화되나 세션 내 멀티턴은 **thread_id**로 격리 보장 |
 | 638K 유저 전처리 시간 | `--sample 1000` (submission 포함 유저만) 개발, 완성 시 full build |
 | FAISS GPU 메모리 부족 | 배치 크기 10,000 단위 조정, CPU 인덱스 fallback |
 | submission에 메타 없음 | train.parquet item_id join 필수 |
 | 유사 사용자 품질 낮음 | 카테고리+브랜드 벡터 + purchase 가중으로 개선 |
+| 재방문 후보 부족 (활동 적은 유저) | seen_items < 3개면 revisit 섹션 숨김 처리; temporal decay λ 조정으로 오래된 이력도 포함 가능 |
 | API 비용 과다 | 의도 분류 키워드 우선, 쇼핑 시에만 긴 context |
 | 신상품 전 유저 동일 추천 | unseen 필터(view·cart·purchase 전체 제외) + 카테고리→브랜드 인터섹션; 4단계 fallback으로 후보 0 방어 (§5 유형3 참고) |
 
@@ -886,7 +1006,7 @@ streamlit run mvp_app/app.py
 
 **"LLM은 추천을 고르지 않고, 이미 고른 추천을 사람 말로 설명한다"**
 
-- **선정**: submission CSV + 3종 규칙 엔진 (검증 가능)
+- **선정**: submission CSV + 4종 규칙 엔진 (검증 가능)
 - **맥락**: train.parquet 프로필 (왜 맞는지)
 - **표현**: Solar Pro (자연어 사유, **user_00001 / shoes.keds.kapika.mid_0001** Semantic ID 사용)
 
