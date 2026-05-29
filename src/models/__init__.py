@@ -1,7 +1,6 @@
 from .sasrec   import SASRec
 from .tisasrec import TiSASRec
 from .cl4srec  import CL4SRec
-from .fearec   import FEARec
 from .bsarec   import BSARec
 from .saferec  import SAFERec
 from .mbstr    import MBSTRec
@@ -15,8 +14,6 @@ def build_model(cfg, n_items: int):
         return TiSASRec(cfg, n_items)
     elif name == "cl4srec":
         return CL4SRec(cfg, n_items)
-    elif name == "fearec":
-        return FEARec(cfg, n_items)
     elif name == "bsarec":
         return BSARec(cfg, n_items)
     elif name == "saferec":
