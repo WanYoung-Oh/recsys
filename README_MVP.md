@@ -132,17 +132,26 @@ cp .env.template .env
 submission CSV와 `data/train.parquet`가 있어야 합니다.
 
 ```bash
-# 샘플 1000명 기준 (빠른 데모용)
+# 전체 638K 유저 빌드 (~55분)
+python src/mvp/build_rag_index.py \
+  --submission outputs/submission_reranker_lgbm.csv
+
+# CF "비슷한 분들이 산" 섹션용 FAISS 전체 인덱스 (~3분 + 검색 시간)
+.mvp/bin/python src/mvp/build_user_vectors.py --full
+```
+
+빠른 데모용 subset(1,000명)만 필요하다면:
+
+```bash
 python src/mvp/build_rag_index.py \
   --submission outputs/submission_reranker_lgbm.csv \
   --skip-faiss \
   --sample 1000
-
-# (선택) CF "비슷한 분들이 산" 섹션용 FAISS — 별도 스크립트
-python src/mvp/build_user_vectors.py
 ```
 
 `rag_data/`는 git에 올리지 않습니다. 로컬에서 위 명령으로 생성하거나, 이미 빌드된 폴더를 두면 됩니다.
+
+> **현재 빌드 상태**: DB 1,000명 샘플 완료 · FAISS 1,000명 완료 (`user_neighbors.npy` 78 KB)
 
 ### 4. 앱 실행
 
@@ -300,7 +309,7 @@ python src/mvp/eval/evaluator.py \
 | ---- | ---- |
 | **Evidence Pack** | `rag_data/evidence_pack.jsonl`·`evidence_pack.py` — 설계 문서에는 있으나 **코드·데이터 미구현**. 현재 chips는 catalog·프로필에서 직접 계산 |
 | **hard_gate** | item_alias 범위 검사만. Evidence 키 화이트리스트·bool 모순 검사 미구현 |
-| **전체 유저** | `--sample 1000`으로 빌드한 1,000명 subset만 DB에 있음. 전체 63만 유저 빌드는 약 55분 소요(`--sample` 생략 시) |
+| **전체 유저** | 현재 DB·FAISS 모두 1,000명 샘플 기준. 전체 638K 빌드 시 DB ~2.5분 + FAISS `--full` (IndexFlatIP 기준 수 시간 소요, 실용적이지 않음) |
 
 ---
 
@@ -336,4 +345,4 @@ python src/mvp/eval/evaluator.py \
 
 ---
 
-*최종 수정: 2026-05-29 · 본 MVP는 RecSys 2026 경진대회 submission을 전제로 한 데모이며, 프로덕션 서비스가 아닙니다.*
+*최종 수정: 2026-05-30 (1,000명 샘플 재빌드) · 본 MVP는 RecSys 2026 경진대회 submission을 전제로 한 데모이며, 프로덕션 서비스가 아닙니다.*

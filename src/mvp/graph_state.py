@@ -21,6 +21,7 @@ class GraphState(TypedDict, total=False):
     context_text: Optional[str]
     requested_category: Optional[str]    # 메시지에서 추출한 요청 카테고리 (예: "shirt")
     requested_price_filter: Optional[str] # "cheaper" | "pricier" | None
+    requested_section: Optional[str]     # "recency" | "revisit" | None(=content 우선)
 
     # Solar Pro 응답
     explanation: Optional[dict]   # {sections: {top10: [...], content: [...], ...}}

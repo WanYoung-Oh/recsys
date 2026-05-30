@@ -95,15 +95,22 @@ def _load_neighbors_data() -> dict | None:
     if not (npy.exists() and meta.exists() and row.exists()):
         return None
     import sqlite3
+    row_to_alias = pickle.load(open(meta, "rb"))
+    needed = list(row_to_alias.values())
+    placeholders = ",".join("?" * len(needed))
     neighbor_profiles: dict[str, dict] = {}
     con = sqlite3.connect(RAG / "user_profiles.db")
-    for ua, pj in con.execute("SELECT user_alias, profile_json FROM user_profiles").fetchall():
+    for ua, pj in con.execute(
+        f"SELECT user_alias, profile_json FROM user_profiles"
+        f" WHERE user_alias IN ({placeholders})",
+        needed,
+    ).fetchall():
         p = json.loads(pj); p["user_alias"] = ua
         neighbor_profiles[ua] = p
     con.close()
     return {
         "neighbors_npy":     np.load(npy),
-        "row_to_alias":      pickle.load(open(meta, "rb")),
+        "row_to_alias":      row_to_alias,
         "alias_to_row":      pickle.load(open(row,  "rb")),
         "neighbor_profiles": neighbor_profiles,
     }
@@ -181,12 +188,23 @@ def _item_label_short(alias: str, meta: dict) -> str:
     return f"{cat} | {brand} | {_item_num(alias)}"
 
 def _get_best_item(result: dict) -> tuple[str, str]:
-    """explanation에서 reason이 있는 첫 번째 상품 반환. 없으면 candidates 첫 번째."""
-    for sec in ("top10", "content", "recency", "revisit"):
+    """explanation에서 reason이 있는 첫 번째 상품 반환. 없으면 candidates 첫 번째.
+
+    requested_section에 따라 섹션 우선순위를 조정한다.
+    """
+    req_sec = result.get("requested_section")
+    if req_sec == "recency":
+        sec_order = ("recency", "content", "revisit", "top10")
+    elif req_sec == "revisit":
+        sec_order = ("revisit", "content", "recency", "top10")
+    else:
+        sec_order = ("top10", "content", "recency", "revisit")
+
+    for sec in sec_order:
         for item in (result.get("explanation") or {}).get("sections", {}).get(sec, []):
             if isinstance(item, dict) and item.get("item_alias") and item.get("reason", "").strip():
                 return item["item_alias"], item["reason"]
-    for sec in ("top10", "content", "recency"):
+    for sec in sec_order:
         items = result.get("candidates", {}).get(sec, [])
         if items:
             return items[0], ""
@@ -299,14 +317,14 @@ with st.sidebar:
         ("user_00004", "👟 신발 전문 탐색"),
         ("user_00017", "🌙 파자마·셔츠 선호"),
     ]
-    for ua, label in demo_users:
-        if ua in [a for a, _ in users]:
-            if st.button(label, key=f"demo_{ua}", use_container_width=True):
-                st.session_state.user_alias  = ua
+    for _ua, _label in demo_users:
+        if _ua in [a for a, _ in users]:
+            if st.button(_label, key=f"demo_{_ua}", use_container_width=True):
+                st.session_state.user_alias  = _ua
                 st.session_state.thread_id   = str(uuid.uuid4())
                 st.session_state.messages    = []
                 st.session_state.last_result = None
-                st.session_state["_prev_ua"] = ua
+                st.session_state["_prev_ua"] = _ua
                 st.rerun()
 
     st.divider()
@@ -318,8 +336,7 @@ with st.sidebar:
 
     st.divider()
 
-    # P4: SelfCheckGPT 토글
-    st.subheader("🧪 P4 품질 검증")
+    st.subheader("🧪 품질 검증")
     enable_selfcheck = st.toggle(
         "SelfCheckGPT 활성화",
         value=False,
@@ -327,7 +344,6 @@ with st.sidebar:
         key="selfcheck_toggle",
     )
 
-    # P4: Eval 리포트 표시
     eval_report = _load_eval_report()
     if eval_report:
         with st.expander("📊 Golden Set 평가 결과", expanded=False):
@@ -443,7 +459,7 @@ with chat_col:
                         "trust_passed": None,
                     }
 
-            # P4: SelfCheckGPT (토글 활성화 + 쇼핑 추천 결과가 있을 때만)
+            # SelfCheckGPT (토글 활성화 + 쇼핑 추천 결과가 있을 때만)
             if (
                 st.session_state.get("selfcheck_toggle", False)
                 and result.get("trust_passed")
@@ -541,7 +557,7 @@ with rec_col:
                     st.info("💰 이전 추천 대비 저렴한 상품 필터 적용", icon="💰")
                 elif pf == "pricier":
                     st.info("💎 이전 추천 대비 고가 상품 필터 적용", icon="💎")
-                # P4: Groundedness 배지 (SelfCheckGPT 결과가 있을 때)
+                # Groundedness 배지 (SelfCheckGPT 결과가 있을 때)
                 if has_llm and last.get("groundedness") is not None:
                     _groundedness_badge(
                         last["groundedness"],

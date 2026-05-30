@@ -29,13 +29,21 @@ ROOT = Path(__file__).resolve().parents[2]
 SHOPPING_KEYWORDS = frozenset({
     "추천", "상품", "쇼핑", "구매", "브랜드", "뭐 살까", "골라줘",
     "어울리는", "왜 추천", "살까", "더 싸", "취향", "신상",
-    "보여줘", "알려줘", "추천해", "뭐가 좋아",
+    "추천해", "뭐가 좋아",
     "더 저렴", "저렴한", "가성비", "고급", "프리미엄",
+})
+
+# 이 단어가 메시지에 있으면 쇼핑 키워드가 있어도 Solar Pro 분류로 위임
+_NON_SHOPPING_OVERRIDE = frozenset({
+    "날씨", "뉴스", "검색", "네이버", "구글", "유튜브", "온도", "미세먼지",
 })
 _USER_ALIAS_PAT = re.compile(r"\buser_\d+\b")
 
 # 카테고리 키워드 → L2 매핑 (긴 키워드 먼저 매칭되도록 정렬해 사용)
 _CAT_KEYWORDS: dict[str, str] = {
+    # 의류 전반 (clothing = 가상 카테고리, rec_engine에서 의류 L2 전체로 확장)
+    "의류": "clothing", "패션": "clothing", "코디": "clothing",
+    "입을": "clothing", "옷": "clothing",
     # 신발 계열
     "운동화": "shoes", "스니커즈": "shoes", "슬리퍼": "shoes",
     "샌들": "shoes", "부츠": "shoes", "구두": "shoes", "신발": "shoes",
@@ -60,6 +68,13 @@ _CAT_KEYWORDS: dict[str, str] = {
     "벨트": "belt",
     "의상": "costume", "코스튬": "costume",
 }
+
+# "clothing" 가상 카테고리 → 의류 L2 전체로 확장
+_CLOTHING_L2 = [
+    "shirt", "tshirt", "trousers", "jeans", "shorts",
+    "dress", "jacket", "jumper", "pajamas", "skirt",
+    "underwear", "scarf", "glove", "sock", "belt", "costume",
+]
 # 긴 키워드 우선 적용을 위해 길이 내림차순 정렬
 _CAT_KEYWORDS_SORTED = sorted(_CAT_KEYWORDS.items(), key=lambda x: -len(x[0]))
 
@@ -74,6 +89,20 @@ def _extract_requested_category(message: str) -> str | None:
 
 _PRICE_CHEAPER = ("더 싸", "더 저렴", "저렴한", "싸게", "저가", "가성비", "싼", "cheap")
 _PRICE_PRICIER = ("더 비싸", "고급", "프리미엄", "비싼", "럭셔리", "하이엔드")
+
+_SECTION_RECENCY = ("신상품", "신상", "새로 나온", "신제품", "최신", "새로운")
+_SECTION_REVISIT = ("다시 볼", "재방문", "봤던", "다시 보")
+
+
+def _extract_requested_section(message: str) -> str | None:
+    """메시지에서 요청 섹션 추출. 'recency' | 'revisit' | None."""
+    for kw in _SECTION_RECENCY:
+        if kw in message:
+            return "recency"
+    for kw in _SECTION_REVISIT:
+        if kw in message:
+            return "revisit"
+    return None
 
 
 def _extract_price_filter(message: str) -> str | None:
@@ -116,11 +145,15 @@ def _store() -> dict:
         with open(row_path, "rb") as f:
             alias_to_row = pickle.load(f)
 
-        # 이웃 프로필 일괄 로드 (DB에 있는 유저만)
+        # 이웃으로 실제 등장하는 유저만 로드 (전체 638K → ~925명)
+        needed = list(row_to_alias.values())
+        placeholders = ",".join("?" * len(needed))
         neighbor_profiles: dict[str, dict] = {}
         with sqlite3.connect(_db_path()) as con:
             rows = con.execute(
-                "SELECT user_alias, profile_json FROM user_profiles"
+                f"SELECT user_alias, profile_json FROM user_profiles"
+                f" WHERE user_alias IN ({placeholders})",
+                needed,
             ).fetchall()
         for ua, pj in rows:
             p = json.loads(pj)
@@ -168,11 +201,21 @@ def intent_router(state: GraphState) -> GraphState:
     msg = state.get("message", "")
 
     # 요청 카테고리·가격 방향 추출 (모든 경로에서 공통 처리)
-    state["requested_category"]    = _extract_requested_category(msg)
-    state["requested_price_filter"] = _extract_price_filter(msg)
+    new_cat      = _extract_requested_category(msg)
+    price_filter = _extract_price_filter(msg)
+    state["requested_price_filter"] = price_filter
+    state["requested_section"]      = _extract_requested_section(msg)
+    # 명시적으로 새 카테고리가 언급된 경우에만 업데이트
+    # — 그 외에는 MemorySaver가 이전 카테고리를 유지 (follow-up 맥락 보존)
+    if new_cat is not None:
+        state["requested_category"] = new_cat
 
-    # 0순위: user_alias 이미 있고 쇼핑 메시지 → 즉시 shopping (ID 재요청 없음)
-    if state.get("user_alias") and any(kw in msg for kw in SHOPPING_KEYWORDS):
+    has_shopping_kw    = any(kw in msg for kw in SHOPPING_KEYWORDS)
+    has_non_shopping   = any(kw in msg for kw in _NON_SHOPPING_OVERRIDE)
+
+    # 0순위: user_alias 이미 있고 쇼핑 메시지 → 즉시 shopping
+    #        단, 비쇼핑 단어(날씨·검색 등)가 함께 있으면 Solar Pro로 위임
+    if state.get("user_alias") and has_shopping_kw and not has_non_shopping:
         state["intent"] = "shopping"
         return state
 
@@ -181,12 +224,12 @@ def intent_router(state: GraphState) -> GraphState:
         state["intent"] = "user_alias"
         return state
 
-    # 2순위: 쇼핑 키워드 매칭 → API 호출 없이
-    if any(kw in msg for kw in SHOPPING_KEYWORDS):
+    # 2순위: 쇼핑 키워드 매칭 (비쇼핑 단어 없을 때만) → API 호출 없이
+    if has_shopping_kw and not has_non_shopping:
         state["intent"] = "shopping"
         return state
 
-    # 3순위: Solar Pro 3-class 분류 (키워드 미매칭 시만)
+    # 3순위: Solar Pro 3-class 분류
     state["intent"] = solar.classify_intent(msg)
     return state
 
@@ -255,7 +298,11 @@ def rec_engine(state: GraphState) -> GraphState:
 
     # 카테고리 오버라이드
     req_cat = state.get("requested_category")
-    if req_cat:
+    if req_cat == "clothing":
+        # "옷/의류/패션/코디" → 신발을 제외한 의류 L2 전체로 확장
+        effective_profile = dict(profile)
+        effective_profile["top_categories_l2"] = _CLOTHING_L2
+    elif req_cat:
         effective_profile = dict(profile)
         effective_profile["top_categories_l2"] = [req_cat]
     else:
@@ -266,10 +313,17 @@ def rec_engine(state: GraphState) -> GraphState:
     price_filter = state.get("requested_price_filter")
     if price_filter:
         catalog = s["item_catalog"]
-        prev_top10 = (state.get("candidates") or {}).get("top10") or []
+        prev_candidates = state.get("candidates") or {}
+        # 카테고리가 지정된 이전 추천이면 content 섹션 기준, 아니면 top10 기준
+        req_cat = state.get("requested_category")
+        price_ref_items = (
+            prev_candidates.get("content") or prev_candidates.get("top10") or []
+            if req_cat
+            else prev_candidates.get("top10") or []
+        )
         prices = [
             catalog[a]["price_median"]
-            for a in prev_top10[:5]
+            for a in price_ref_items[:5]
             if a in catalog and catalog[a].get("price_median")
         ]
         if not prices:
@@ -310,8 +364,14 @@ def context_builder(state: GraphState) -> GraphState:
         "revisit": "다시 볼 만한",
     }
 
-    # 섹션당 상위 1개만 설명 요청 — 생성 토큰 최소화로 API 응답 속도 개선
-    _EXPLAIN_SECTIONS = ("content", "recency", "revisit")  # top10은 설명 불필요(대시보드 표시용)
+    # 요청 섹션을 앞으로 — Solar Pro가 관련 아이템을 우선 설명하도록
+    req_sec = state.get("requested_section")
+    if req_sec == "recency":
+        _EXPLAIN_SECTIONS = ("recency", "content", "revisit")
+    elif req_sec == "revisit":
+        _EXPLAIN_SECTIONS = ("revisit", "content", "recency")
+    else:
+        _EXPLAIN_SECTIONS = ("content", "recency", "revisit")  # top10은 설명 불필요(대시보드 표시용)
     sections: list[str] = []
     for key in _EXPLAIN_SECTIONS:
         label = _LABELS.get(key, key)
@@ -334,7 +394,9 @@ def context_builder(state: GraphState) -> GraphState:
 
     # 요청 조건 Solar Pro에 명시
     req_note = ""
-    if req_cat:
+    if req_cat == "clothing":
+        req_note += "\n[요청 카테고리: 의류 전반 — 신발·가방 제외한 의류 위주로 사유 작성]"
+    elif req_cat:
         req_note += f"\n[요청 카테고리: {ko_cat(req_cat)} — 이 카테고리 위주로 사유 작성]"
     price_filter = state.get("requested_price_filter")
     if price_filter == "cheaper":
