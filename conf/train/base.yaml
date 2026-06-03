@@ -9,5 +9,5 @@ pin_memory: true
 early_stopping_patience: 5 # val/ndcg_cart_purchase 기준
 loss_weights:
   view: 1.0
-  cart: 5.0 # sweep 범위: 10~50
-  purchase: 28.0
+  cart: 25.0 # sweep 범위: 10~50
+  purchase: 50.0
