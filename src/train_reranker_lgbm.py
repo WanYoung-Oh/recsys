@@ -22,6 +22,9 @@ from models.tifu_knn import TIFUKNN
 from util.paths import get_checkpoint_path
 from metrics import ndcg_at_k
 
+# importance=0 으로 확인된 in_ 피처는 학습·추론 모두 제외
+_SKIP_IN_MODELS = {"mbstr", "tisasrec"}
+
 SEED = 42
 random.seed(SEED)
 np.random.seed(SEED)
@@ -177,17 +180,30 @@ def collect_tifu_preds(hist_df, item2idx, idx2item, user_ids) -> dict:
 
 
 def build_history_maps(hist_df) -> dict:
-    max_time = hist_df["event_time"].max()
-    recent14 = max_time - pd.Timedelta(days=14)
+    max_time    = hist_df["event_time"].max()
+    recent14    = max_time - pd.Timedelta(days=14)
+    purchase_df = hist_df[hist_df["event_type"] == "purchase"]
+
+    user_total_s    = hist_df.groupby("user_id").size()
+    user_purchase_s = purchase_df.groupby("user_id").size().reindex(user_total_s.index, fill_value=0)
+
+    item_total_s    = hist_df.groupby("item_id").size()
+    item_purchase_s = purchase_df.groupby("item_id").size().reindex(item_total_s.index, fill_value=0)
 
     return {
-        "user_total_cnt":    hist_df.groupby("user_id").size().to_dict(),
-        "user_recent14_cnt": hist_df[hist_df["event_time"] >= recent14].groupby("user_id").size().to_dict(),
-        "item_pop":          hist_df.groupby("item_id").size().to_dict(),
-        "item_recent14_pop": hist_df[hist_df["event_time"] >= recent14].groupby("item_id").size().to_dict(),
-        "viewed_map":        hist_df.groupby("user_id")["item_id"].apply(set).to_dict(),
-        "carted_map":        hist_df[hist_df["event_type"] == "cart"].groupby("user_id")["item_id"].apply(set).to_dict(),
-        "purchased_map":     hist_df[hist_df["event_type"] == "purchase"].groupby("user_id")["item_id"].apply(set).to_dict(),
+        "user_total_cnt":      user_total_s.to_dict(),
+        "user_recent14_cnt":   hist_df[hist_df["event_time"] >= recent14].groupby("user_id").size().to_dict(),
+        "item_pop":            item_total_s.to_dict(),
+        "item_recent14_pop":   hist_df[hist_df["event_time"] >= recent14].groupby("item_id").size().to_dict(),
+        "viewed_map":          hist_df.groupby("user_id")["item_id"].apply(set).to_dict(),
+        "carted_map":          hist_df[hist_df["event_type"] == "cart"].groupby("user_id")["item_id"].apply(set).to_dict(),
+        "purchased_map":       purchase_df.groupby("user_id")["item_id"].apply(set).to_dict(),
+        # 신규: binary seen_before → 횟수로 확장
+        "user_item_view_cnt":  hist_df.groupby(["user_id", "item_id"]).size().to_dict(),
+        # 신규: purchase 관점 인기도 (view만 많고 구매 없는 아이템 구분)
+        "item_purchase_ratio": (item_purchase_s / item_total_s).to_dict(),
+        # 신규: 유저의 실제 구매 성향 ("사는 사람"인지 여부)
+        "user_purchase_ratio": (user_purchase_s / user_total_s).to_dict(),
     }
 
 
@@ -212,11 +228,10 @@ def build_candidate_rows(user_ids, preds_by_model, hist_maps, gt_map=None):
         if not cand_set:
             continue
 
-        u_total = hist_maps["user_total_cnt"].get(uid, 0)
-        u_r14   = hist_maps["user_recent14_cnt"].get(uid, 0)
-        viewed  = hist_maps["viewed_map"].get(uid, set())
-        carted  = hist_maps["carted_map"].get(uid, set())
-        bought  = hist_maps["purchased_map"].get(uid, set())
+        u_total      = hist_maps["user_total_cnt"].get(uid, 0)
+        u_r14        = hist_maps["user_recent14_cnt"].get(uid, 0)
+        u_pur_ratio  = hist_maps["user_purchase_ratio"].get(uid, 0.0)
+        view_cnt_map = hist_maps["user_item_view_cnt"]
 
         local_rows = []
         for iid in cand_set:
@@ -225,15 +240,16 @@ def build_candidate_rows(user_ids, preds_by_model, hist_maps, gt_map=None):
                 "user_recent14_cnt_log1p": np.log1p(u_r14),
                 "item_pop_log1p":          np.log1p(hist_maps["item_pop"].get(iid, 0)),
                 "item_recent14_pop_log1p": np.log1p(hist_maps["item_recent14_pop"].get(iid, 0)),
-                "seen_before":      int(iid in viewed),
-                "carted_before":    int(iid in carted),
-                "purchased_before": int(iid in bought),
-                "model_hit_count":  0,
+                "user_item_view_cnt":      view_cnt_map.get((uid, iid), 0),
+                "item_purchase_ratio":     hist_maps["item_purchase_ratio"].get(iid, 0.0),
+                "user_purchase_ratio":     u_pur_ratio,
+                "model_hit_count":         0,
             }
             for m in model_names:
                 r    = rank_maps[m].get(uid, {}).get(iid, 999)
                 in_m = int(r != 999)
-                feat[f"in_{m}"]   = in_m
+                if m not in _SKIP_IN_MODELS:
+                    feat[f"in_{m}"] = in_m
                 feat[f"rank_{m}"] = r if in_m else 999
                 feat[f"rr_{m}"]   = (1.0 / r) if in_m else 0.0
                 feat["model_hit_count"] += in_m
@@ -394,8 +410,9 @@ def main():
         for m, pred in preds_full.items()
     }
 
-    RERANK_BATCH = 2000
-    out_pred     = {}
+    RERANK_BATCH     = 2000
+    out_pred         = {}
+    full_view_cnt_map = full_hist_maps["user_item_view_cnt"]
 
     batches = range(0, len(sample_user_order), RERANK_BATCH)
     for batch_start in tqdm(batches, desc="reranking", unit="batch"):
@@ -410,11 +427,9 @@ def main():
             for m in model_names:
                 cand_set.update(preds_full[m].get(uid, []))
 
-            u_total = full_hist_maps["user_total_cnt"].get(uid, 0)
-            u_r14   = full_hist_maps["user_recent14_cnt"].get(uid, 0)
-            viewed  = full_hist_maps["viewed_map"].get(uid, set())
-            carted  = full_hist_maps["carted_map"].get(uid, set())
-            bought  = full_hist_maps["purchased_map"].get(uid, set())
+            u_total     = full_hist_maps["user_total_cnt"].get(uid, 0)
+            u_r14       = full_hist_maps["user_recent14_cnt"].get(uid, 0)
+            u_pur_ratio = full_hist_maps["user_purchase_ratio"].get(uid, 0.0)
 
             for iid in cand_set:
                 feat = {
@@ -422,15 +437,16 @@ def main():
                     "user_recent14_cnt_log1p": np.log1p(u_r14),
                     "item_pop_log1p":          np.log1p(full_hist_maps["item_pop"].get(iid, 0)),
                     "item_recent14_pop_log1p": np.log1p(full_hist_maps["item_recent14_pop"].get(iid, 0)),
-                    "seen_before":      int(iid in viewed),
-                    "carted_before":    int(iid in carted),
-                    "purchased_before": int(iid in bought),
-                    "model_hit_count":  0,
+                    "user_item_view_cnt":      full_view_cnt_map.get((uid, iid), 0),
+                    "item_purchase_ratio":     full_hist_maps["item_purchase_ratio"].get(iid, 0.0),
+                    "user_purchase_ratio":     u_pur_ratio,
+                    "model_hit_count":         0,
                 }
                 for m in model_names:
                     r    = rank_maps_full[m].get(uid, {}).get(iid, 999)
                     in_m = int(r != 999)
-                    feat[f"in_{m}"]   = in_m
+                    if m not in _SKIP_IN_MODELS:
+                        feat[f"in_{m}"] = in_m
                     feat[f"rank_{m}"] = r if in_m else 999
                     feat[f"rr_{m}"]   = (1.0 / r) if in_m else 0.0
                     feat["model_hit_count"] += in_m

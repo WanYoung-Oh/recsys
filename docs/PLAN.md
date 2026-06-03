@@ -2,7 +2,7 @@
 
 | 항목      | 내용                                                                                                                                                                                        |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 최종 수정 | 2026-05-26                                                                                                                                                                                  |
+| 최종 수정 | 2026-06-03                                                                                                                                                                                  |
 | 하드웨어  | RTX 3090 24GB VRAM                                                                                                                                                                          |
 | 개요      | 이커머스 로그(세션·시간순) 위에서 **미래 1주 구매 상품**을 **NDCG@10(이진 relevance)** 로 평가하는 경진대회. EDA 실측값·1-Fold Holdout CV·Hydra+wandb 파이프라인을 반영한 실행 가능한 플랜. |
 
@@ -150,8 +150,8 @@ view 99.78% / cart 0.20% / purchase 0.02%의 극단적 불균형을 Loss 단에�
 ```python
 EVENT_LOSS_WEIGHTS = {
     'view':     1.0,
-    'cart':     25.0,   # cart→purchase 전환율이 view의 475배 — 핵심 신호로 취급. sweep 범위: 10~50
-    'purchase': 50.0,   # 실제 구매 최고 가중치. cart와 gap을 좁혀 cart의 예측력 강조
+    'cart':     5.0,    # cart→purchase 전환율이 view의 475배 — 핵심 신호로 취급. sweep 범위: 10~50
+    'purchase': 28.0,   # 실제 구매 최고 가중치. cart와 gap을 좁혀 cart의 예측력 강조
 }
 
 # batch_event_types: 각 배치 샘플의 타겟 아이템(다음 예측 대상) event_type
@@ -179,7 +179,7 @@ class FocalLoss(nn.Module):
 
 - MB-STR / 멀티비헤이비어 모델 실험 시 **전략 A 필수**
 - 단일 시퀀스 모델(TiSASRec·SASRec 등)에서는 **전략 B** 또는 cart/purchase 위치에만 가중치 부여
-- YAML에 `loss_weights: {view: 1.0, cart: 25.0, purchase: 50.0}` 로 노출하여 wandb sweep 대상으로 관리 (cart sweep 범위: 10~50)
+- YAML에 `loss_weights: {view: 1.0, cart: 5.0, purchase: 28.0}` 로 노출하여 wandb sweep 대상으로 관리 (cart sweep 범위: 10~50)
 
 ---
 
@@ -222,7 +222,7 @@ class FocalLoss(nn.Module):
 | `src/inference.py`              | ✅   | `generate_predictions` (time/freq/behavior 보조 시퀀스 지원), `generate_submission_long`, `validate_submission` (n_users 필수 인자) |
 | `src/ensemble_submit.py`        | ✅   | 랭크 앙상블 + `_cart_boost()` 후처리 → submission CSV (active_models를 rank.yaml에서 동적 파생) |
 | `src/submit.py`                 | ✅   | 단일 모델 체크포인트 로드 → submission CSV (tisasrec·saferec·mbstr 보조 시퀀스 자동 선택) |
-| `src/train_reranker_lgbm.py`    | ✅   | LightGBM LambdaMART 리랭커: tuning 예측 → 메타 데이터셋 빌드 → 학습 → full 예측 리랭킹 → `submission_reranker_lgbm.csv` |
+| `src/train_reranker_lgbm.py`    | ✅   | LightGBM LambdaMART 리랭커: tuning 예측 → 메타 데이터셋 빌드 → 학습 → full 예측 리랭킹 → `submission_reranker_lgbm.csv`. 피처: `user_item_view_cnt`·`item_purchase_ratio`·`user_purchase_ratio` (신규 3개); `seen_before`·`carted_before`·`purchased_before`·`in_mbstr`·`in_tisasrec` (importance=0 제거) |
 | `src/run_reranker_family_drop.py` | ✅ | 피처 그룹 ablation 래퍼: `DROP_FAMILY` 환경변수로 popularity / tifu_rank / user_activity 피처 패치 후 리랭커 재실행 |
 
 ### Val NDCG@10 실험 결과 (cart+purchase GT = 1,065명)
@@ -354,7 +354,7 @@ DROP_FAMILY=user_activity python src/run_reranker_family_drop.py
 
 **문제 재정의**: **cart→purchase가 구매를 설명하는 핵심 메커니즘** — cart 전환율(~3.8%)이 view 전환율(~0.008%)의 475배. view는 interest 탐색 신호로서 cart 이벤트를 유도하는 상위 funnel. 따라서 **"carted-but-not-purchased 아이템을 예측"**이 실질 문제 정의에 가장 가깝다. 시간 간격 변동성(CV=4.12)과 데이터 희소성(99.96%)이 모델 선택의 두 핵심 축.
 
-> **학습 시그널 전략**: 전체 이벤트(view+cart+purchase)를 시퀀스로 사용. **cart 이벤트를 purchase의 직접 전조 신호로 취급** (loss weight 25.0). purchase는 0.02%로 극소량이지만 학습 포함 (loss weight 50.0).
+> **학습 시그널 전략**: 전체 이벤트(view+cart+purchase)를 시퀀스로 사용. **cart 이벤트를 purchase의 직접 전조 신호로 취급** (loss weight 5.0). purchase는 0.02%로 극소량이지만 학습 포함 (loss weight 28.0).
 
 ```mermaid
 flowchart TB
@@ -585,8 +585,8 @@ pin_memory: true
 early_stopping_patience: 5    # val/ndcg_cart_purchase 기준
 loss_weights:
   view: 1.0
-  cart: 25.0           # sweep 범위: 10~50
-  purchase: 50.0
+  cart: 5.0            # sweep 범위: 10~50
+  purchase: 28.0
 ```
 
 ### wandb 모니터링 지표
@@ -1158,6 +1158,8 @@ top_k: 10
 | 2 | TiSASRec + BSARec + MB-STR + TIFU-KNN | full | optimize 재실행 (1000+ trials) | ⚠️ **val 누수** — full-train이 val 구간(Feb 9~22)을 학습에 포함하므로 optimize 가중치 부풀려짐 | **0.1435** ↓ |
 | 3 | TiSASRec + BSARec + MB-STR + TIFU-KNN | tuning | tifu_group_count=5, decay_within=0.93, decay_across=0.55 | TIFU 하이퍼파라미터 튜닝 | **0.1435** — 의미 없음 |
 | 4 | TiSASRec + BSARec + MB-STR + TIFU-KNN | tuning | #1 가중치 그대로 | 재현성 확인 | **0.1440** |
+| 5 | LightGBM LambdaMART 리랭커 | tuning+full | — | 베이스 피처 (seen_before binary·carted_before·purchased_before 포함) | **0.1504** |
+| 6 | LightGBM LambdaMART 리랭커 (피처 개선) | tuning+full | — | `user_item_view_cnt`(횟수)·`item_purchase_ratio`·`user_purchase_ratio` 추가; `seen_before`·`carted_before`·`purchased_before`·`in_mbstr`·`in_tisasrec`(importance=0) 제거 | **0.1509** ↑ (+0.0005) |
 
 > **TIFU-KNN 가중치 0.6461 도미넌스 분석**: `optimize_ensemble.py`가 Val(Feb 9~22, cart+purchase)에서 최적화한 결과. TIFU의 시간 감쇠 특성이 holdout Val에서 유리하게 작용하나 LB 테스트 구간에서 과적합 가능성 있음.
 
@@ -1227,6 +1229,19 @@ Full-train ckpt로 제출하려면 `optimize_ensemble.py` 없이 **tuning 시절
 - **LB 0.1441 해석**:
   - **Val(~0.35) vs LB(0.1441) 격차**: (①) Val은 Feb 09~22·**cart+purchase GT 1,065명**, LB는 **다른 1주·purchase 중심** 가능 (②) 제출 시 **tuning ckpt**·TIFU **~65%**는 Val holdout에 맞춘 조합 (③) spike 구간(**69.3% purchase**)에서는 **view·감쇠(TIFU) 신호 약화**, **MB-STR·cart boost**가 더 중요할 수 있음.
   - **시사점**: 조합 자체(MB-STR 포함)는 도메인과 정합하나, **가중치 optimize 결과(TIFU 과대)** 와 **ckpt phase(tuning)** 가 LB를 끌어내렸을 가능성 — **Full-train ckpt + TIFU 상한(예: 0.15~0.25) + CL4SRec 또는 MB-STR 중심 재조합**이 다음 실험 축.
+
+**6. LightGBM LambdaMART 리랭커 — 피처 개선 결과 (Public LB 0.1509)**
+
+| 변경 유형 | 피처 | 이유 |
+|-----------|------|------|
+| 추가 | `user_item_view_cnt` (int, 횟수) | `seen_before` binary → 동일 아이템 반복 조회 횟수로 확장; LightGBM이 분기점 학습 가능 |
+| 추가 | `item_purchase_ratio` (item_purchase_cnt / item_total_cnt) | view 많아도 구매 없는 아이템 ↔ 실제 구매로 이어지는 아이템 구분 |
+| 추가 | `user_purchase_ratio` (user_purchase_cnt / user_total_cnt) | "이 유저가 실제로 사는 사람인지" 신호 — TIFU-KNN(구매 이력 기반)과 시너지 |
+| 제거 | `seen_before`·`carted_before`·`purchased_before` | binary 대체 또는 importance=0 확인 |
+| 제거 | `in_mbstr`·`in_tisasrec` | importance=0; `rank_*`·`rr_*`로 정보 이미 포함 |
+
+- **베이스 대비 +0.0005**: 피처 수 순감 2개(+3 −5) + 신호 품질 향상 → 소폭이지만 명확한 개선
+- **다음 실험 축**: `user_item_view_cnt` 대신 구매·장바구니 이벤트로만 집계한 `user_item_cart_cnt` 분리 실험, `item_purchase_ratio` Laplace 스무딩 강도 비교
 
 **조합 선택 요약 (EDA → 실행)**
 
@@ -1348,7 +1363,7 @@ def apply_cart_boost(
 | **AMP BF16 활성화 확인**                                | RTX 3090에서 2~3배 속도 향상                                                                                                       | `torch.autocast("cuda", dtype=torch.bfloat16)`                                        |
 | **VRAM 사용량 확인**                                    | 실측 (max_seq_len=50): SASRec batch=4096→**~6GB**, TiSASRec batch=1024→**~9GB**, CL4SRec batch=2048→**~10GB**. 각 모델별 상한 초과 시 배치 추가 축소 | `nvidia-smi` / wandb `gpu_memory_gb`                                                  |
 | **brand 맵핑 Data Leakage 방지**                        | 전체 df 기준 계산 시 val 구간 brand 정보 누수                                                                                      | `train_df` 기준 `build_brand_mapping()` 호출 후 val_df에 동일 맵핑 적용               |
-| **event_type 가중 손실 적용 확인**                      | cart→purchase 핵심 메커니즘 반영 — cart=25.0 기본값, sweep 범위 10~50                                                              | `EVENT_LOSS_WEIGHTS` 또는 FocalLoss; YAML sweep 대상                                  |
+| **event_type 가중 손실 적용 확인**                      | cart→purchase 핵심 메커니즘 반영 — cart=5.0·purchase=28.0 기본값, sweep 범위 10~50                                                 | `EVENT_LOSS_WEIGHTS` 또는 FocalLoss; YAML sweep 대상                                  |
 | **cart 후처리 부스트 적용 확인**                        | carted-but-not-purchased 아이템을 상위 랭킹으로 끌어올림 — val NDCG로 `boost_to_top_n` 튜닝                                        | `apply_cart_boost()` — train_df 기준 `cart_boost_map` 빌드                            |
 | **Dynamic Padding / 어텐션 마스킹 정상 동작**           | max_seq_len=50, 시퀀스 중앙값 6 → 패딩 비율 ~88% — 마스킹 없으면 학습 오염                                                        | `key_padding_mask`에 패딩 위치 `True` 마스킹 단위 테스트로 검증                       |
 | **Early Stopping 적용 확인**                            | epochs=300 고정 시 과적합 위험                                                                                                     | `early_stopping_patience=20`; best checkpoint 저장 시점 검증                          |
@@ -1369,7 +1384,7 @@ def apply_cart_boost(
 
 ## 한 줄 요약
 
-**최적 전략**: **cart→purchase가 핵심 메커니즘** (전환율 view의 475배) — **RTX 3090 24GB** 기준 hidden=256·BF16으로 MB-STR(cart→purchase 직접 모델링) + TiSASRec(CV=4.12, batch=1024) + CL4SRec(희소성 99.96%, batch=2048) **랭크 앙상블** + cart 후처리 부스트(carted-but-not-purchased 우선). Loss weight: cart=25.0·purchase=50.0. 추론 시 모델 파라미터 ~17MB로 동시 상주 가능. 검증은 **1-Fold Holdout CV**(Train Nov~Feb 08 / Val Feb 09~22, cart+purchase GT 실측 **1,065명**), Full-train 최종 제출은 Nov~**Feb 29** 전체 기간(spike 포함), 실험 추적은 **Hydra + wandb** (`owy007-/recsys-2026`) 필수.
+**최적 전략**: **cart→purchase가 핵심 메커니즘** (전환율 view의 475배) — **RTX 3090 24GB** 기준 hidden=256·BF16으로 MB-STR(cart→purchase 직접 모델링) + TiSASRec(CV=4.12, batch=1024) + CL4SRec(희소성 99.96%, batch=2048) **랭크 앙상블** + cart 후처리 부스트(carted-but-not-purchased 우선). Loss weight: cart=5.0·purchase=28.0. 추론 시 모델 파라미터 ~17MB로 동시 상주 가능. 검증은 **1-Fold Holdout CV**(Train Nov~Feb 08 / Val Feb 09~22, cart+purchase GT 실측 **1,065명**), Full-train 최종 제출은 Nov~**Feb 29** 전체 기간(spike 포함), 실험 추적은 **Hydra + wandb** (`owy007-/recsys-2026`) 필수.
 
 ---
 

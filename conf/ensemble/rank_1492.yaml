@@ -1,11 +1,11 @@
 weights:
-  tisasrec: 0.1364
-  mbstr: 0.0948
-  tifu_knn: 0.6461
-  cl4srec: 0.1542
+  tisasrec: 0.1196
+  bsarec: 0.2525
+  mbstr: 0.3019
+  tifu_knn: 0.9366
 top_k: 10
 run_id: null
-checkpoint_phase: full
+checkpoint_phase: tuning
 cart_boost: false
 tifu_group_count: 7
 tifu_decay_within: 0.9
