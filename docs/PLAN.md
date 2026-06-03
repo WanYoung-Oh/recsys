@@ -1158,8 +1158,10 @@ top_k: 10
 | 2 | TiSASRec + BSARec + MB-STR + TIFU-KNN | full | optimize 재실행 (1000+ trials) | ⚠️ **val 누수** — full-train이 val 구간(Feb 9~22)을 학습에 포함하므로 optimize 가중치 부풀려짐 | **0.1435** ↓ |
 | 3 | TiSASRec + BSARec + MB-STR + TIFU-KNN | tuning | tifu_group_count=5, decay_within=0.93, decay_across=0.55 | TIFU 하이퍼파라미터 튜닝 | **0.1435** — 의미 없음 |
 | 4 | TiSASRec + BSARec + MB-STR + TIFU-KNN | tuning | #1 가중치 그대로 | 재현성 확인 | **0.1440** |
-| 5 | LightGBM LambdaMART 리랭커 | tuning+full | — | 베이스 피처 (seen_before binary·carted_before·purchased_before 포함) | **0.1504** |
-| 6 | LightGBM LambdaMART 리랭커 (피처 개선) | tuning+full | — | `user_item_view_cnt`(횟수)·`item_purchase_ratio`·`user_purchase_ratio` 추가; `seen_before`·`carted_before`·`purchased_before`·`in_mbstr`·`in_tisasrec`(importance=0) 제거 | **0.1509** ↑ (+0.0005) |
+| 5 | LightGBM LambdaMART 리랭커 (베이스) | tuning+full | loss_weights 1:25:50 ckpt | 구버전 피처 (seen_before binary·carted_before·purchased_before 포함) | **0.1504** |
+| 6 | LightGBM LambdaMART 리랭커 (피처 개선 + loss 1:5:28 ckpt) | tuning+full | loss_weights 1:5:28 ckpt | `user_item_view_cnt`·`item_purchase_ratio`·`user_purchase_ratio` 추가; `seen_before`·`carted_before`·`purchased_before`·`in_mbstr`·`in_tisasrec` 제거 | **0.1509** ↑ (+0.0005) |
+| 7 | LightGBM LambdaMART 리랭커 (피처 개선 + loss 1:25:50 ckpt) | tuning+full | loss_weights 1:25:50 ckpt | #6과 동일 피처, 체크포인트만 교체 | **0.1518** ↑ (+0.0014) ⭐ |
+| 8 | LightGBM LambdaMART 리랭커 (importance=0 제거 시도) | tuning+full | loss_weights 1:25:50 ckpt | `user_purchase_ratio`·`in_bsarec` 추가 제거 시도 | **0.1516** ↓ → 원복 |
 
 > **TIFU-KNN 가중치 0.6461 도미넌스 분석**: `optimize_ensemble.py`가 Val(Feb 9~22, cart+purchase)에서 최적화한 결과. TIFU의 시간 감쇠 특성이 holdout Val에서 유리하게 작용하나 LB 테스트 구간에서 과적합 가능성 있음.
 
@@ -1230,18 +1232,33 @@ Full-train ckpt로 제출하려면 `optimize_ensemble.py` 없이 **tuning 시절
   - **Val(~0.35) vs LB(0.1441) 격차**: (①) Val은 Feb 09~22·**cart+purchase GT 1,065명**, LB는 **다른 1주·purchase 중심** 가능 (②) 제출 시 **tuning ckpt**·TIFU **~65%**는 Val holdout에 맞춘 조합 (③) spike 구간(**69.3% purchase**)에서는 **view·감쇠(TIFU) 신호 약화**, **MB-STR·cart boost**가 더 중요할 수 있음.
   - **시사점**: 조합 자체(MB-STR 포함)는 도메인과 정합하나, **가중치 optimize 결과(TIFU 과대)** 와 **ckpt phase(tuning)** 가 LB를 끌어내렸을 가능성 — **Full-train ckpt + TIFU 상한(예: 0.15~0.25) + CL4SRec 또는 MB-STR 중심 재조합**이 다음 실험 축.
 
-**6. LightGBM LambdaMART 리랭커 — 피처 개선 결과 (Public LB 0.1509)**
+**6-7. LightGBM LambdaMART 리랭커 — 피처 개선 결과 (최고 Public LB 0.1518)**
 
 | 변경 유형 | 피처 | 이유 |
 |-----------|------|------|
-| 추가 | `user_item_view_cnt` (int, 횟수) | `seen_before` binary → 동일 아이템 반복 조회 횟수로 확장; LightGBM이 분기점 학습 가능 |
+| 추가 | `user_item_view_cnt` (int, 횟수) | `seen_before` binary → 반복 조회 횟수로 확장; LightGBM 분기점 학습 가능 |
 | 추가 | `item_purchase_ratio` (item_purchase_cnt / item_total_cnt) | view 많아도 구매 없는 아이템 ↔ 실제 구매로 이어지는 아이템 구분 |
-| 추가 | `user_purchase_ratio` (user_purchase_cnt / user_total_cnt) | "이 유저가 실제로 사는 사람인지" 신호 — TIFU-KNN(구매 이력 기반)과 시너지 |
-| 제거 | `seen_before`·`carted_before`·`purchased_before` | binary 대체 또는 importance=0 확인 |
-| 제거 | `in_mbstr`·`in_tisasrec` | importance=0; `rank_*`·`rr_*`로 정보 이미 포함 |
+| 추가 | `user_purchase_ratio` (user_purchase_cnt / user_total_cnt) | importance=0이지만 **제거 시 0.1516으로 하락** → 간접 정규화 효과로 유지 |
+| 제거 | `seen_before`·`carted_before`·`purchased_before` | binary 대체 또는 importance=0 |
+| 제거 | `in_mbstr`·`in_tisasrec` | importance=0; `rank_*`·`rr_*`로 동일 정보 포함 |
 
-- **베이스 대비 +0.0005**: 피처 수 순감 2개(+3 −5) + 신호 품질 향상 → 소폭이지만 명확한 개선
-- **다음 실험 축**: `user_item_view_cnt` 대신 구매·장바구니 이벤트로만 집계한 `user_item_cart_cnt` 분리 실험, `item_purchase_ratio` Laplace 스무딩 강도 비교
+**피처 importance 실측 (0.1518 기준)**
+
+| 순위 | 피처 | importance | 비고 |
+|------|------|-----------|------|
+| 1 | `item_recent14_pop_log1p` | 206 | 기존 |
+| 2 | `user_item_view_cnt` | 132 | **신규** — 핵심 기여 |
+| 3 | `user_total_cnt_log1p` | 131 | 기존 |
+| 4 | `item_pop_log1p` | 122 | 기존 |
+| 5 | `user_recent14_cnt_log1p` | 105 | 기존 |
+| 6 | `item_purchase_ratio` | 61 | **신규** — 유효 |
+| 7 | `rank_tifu_knn` | 54 | 기존 |
+| … | `rank_tisasrec`·`rr_*`·`model_hit_count`·`rank_mbstr`·`in_tifu_knn` | 31~3 | 기존 |
+| — | `in_bsarec`·`user_purchase_ratio` | 0 | 제거 시 0.1516↓ → **유지** (간접 정규화) |
+
+- **1:25:50 체크포인트 > 1:5:28**: 동일 피처 적용 시 0.1518 vs 0.1509. loss_weight 낮춤이 오히려 역효과
+- **importance=0 ≠ 제거 가능**: `user_purchase_ratio`·`in_bsarec` 제거 시 -0.0002 하락 → LightGBM 트리 탐색 중 다른 피처의 과분기를 간접 억제하는 효과로 추정, 원복 유지
+- **다음 실험 축**: `user_item_view_cnt` 분해 (`user_item_recent14_view_cnt` 추가), `item_purchase_ratio` Laplace 스무딩 강도 비교
 
 **조합 선택 요약 (EDA → 실행)**
 

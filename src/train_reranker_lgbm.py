@@ -198,11 +198,8 @@ def build_history_maps(hist_df) -> dict:
         "viewed_map":          hist_df.groupby("user_id")["item_id"].apply(set).to_dict(),
         "carted_map":          hist_df[hist_df["event_type"] == "cart"].groupby("user_id")["item_id"].apply(set).to_dict(),
         "purchased_map":       purchase_df.groupby("user_id")["item_id"].apply(set).to_dict(),
-        # 신규: binary seen_before → 횟수로 확장
         "user_item_view_cnt":  hist_df.groupby(["user_id", "item_id"]).size().to_dict(),
-        # 신규: purchase 관점 인기도 (view만 많고 구매 없는 아이템 구분)
         "item_purchase_ratio": (item_purchase_s / item_total_s).to_dict(),
-        # 신규: 유저의 실제 구매 성향 ("사는 사람"인지 여부)
         "user_purchase_ratio": (user_purchase_s / user_total_s).to_dict(),
     }
 
