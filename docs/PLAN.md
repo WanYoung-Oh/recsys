@@ -378,7 +378,7 @@ flowchart TB
   end
 
   subgraph train ["3. 모델"]
-    pool["TiSASRec · BSARec · MB-STR<br/>CL4SRec · SAFERec · TIFU-KNN"]
+    pool["TiSASRec · BSARec · MB-STR<br/>TIFU-KNN"]
     best["Best 체크포인트<br/>tuning/best.pt · full/best.pt"]
     optw["optimize_ensemble.py<br/>→ rank.yaml 가중치 자동 갱신"]
     feat --> pool
